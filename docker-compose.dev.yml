@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database for development
+  db:
+    image: postgres:16-alpine
+    container_name: top-tutor-db-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: top_tutor_db
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    ports:
+      - '5432:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching (optional - for future use)
+  redis:
+    image: redis:7-alpine
+    container_name: top-tutor-redis-dev
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data_dev:/data
+
+volumes:
+  postgres_data_dev:
+  redis_data_dev:
+

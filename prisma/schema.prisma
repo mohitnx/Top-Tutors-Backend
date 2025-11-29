@@ -1,0 +1,45 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Example User model - extend as needed
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String?
+  password  String
+  role      Role     @default(USER)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("users")
+}
+
+enum Role {
+  USER
+  ADMIN
+  TUTOR
+  STUDENT
+}
+
+// Example Course model for Top Tutor platform
+model Course {
+  id          String   @id @default(uuid())
+  title       String
+  description String?
+  price       Float    @default(0)
+  isPublished Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("courses")
+}

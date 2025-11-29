@@ -1,0 +1,29 @@
+module.exports = {
+  moduleFileExtensions: ['js', 'json', 'ts'],
+  rootDir: '.',
+  testRegex: '.*\\.spec\\.ts$',
+  transform: {
+    '^.+\\.(t|j)s$': 'ts-jest',
+  },
+  collectCoverageFrom: ['src/**/*.(t|j)s', '!src/**/*.module.ts', '!src/main.ts'],
+  coverageDirectory: './coverage',
+  testEnvironment: 'node',
+  roots: ['<rootDir>/src/', '<rootDir>/test/'],
+  moduleNameMapper: {
+    '^@/(.*)$': '<rootDir>/src/$1',
+    '^@modules/(.*)$': '<rootDir>/src/modules/$1',
+    '^@common/(.*)$': '<rootDir>/src/common/$1',
+    '^@config/(.*)$': '<rootDir>/src/config/$1',
+    '^@prisma/(.*)$': '<rootDir>/src/prisma/$1',
+  },
+  setupFilesAfterEnv: ['<rootDir>/test/setup.ts'],
+  coverageThreshold: {
+    global: {
+      branches: 80,
+      functions: 80,
+      lines: 80,
+      statements: 80,
+    },
+  },
+};
+
