@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
+import { FastifyReply } from 'fastify';
 
 export interface Response<T> {
   success: boolean;
@@ -19,12 +20,12 @@ export interface Response<T> {
 export class TransformInterceptor<T> implements NestInterceptor<T, Response<T>> {
   intercept(context: ExecutionContext, next: CallHandler): Observable<Response<T>> {
     const ctx = context.switchToHttp();
-    const response = ctx.getResponse();
+    const response = ctx.getResponse<FastifyReply>();
 
     return next.handle().pipe(
       map(data => ({
         success: true,
-        statusCode: response.statusCode,
+        statusCode: response.statusCode || 200,
         message: 'Success',
         data,
         timestamp: new Date().toISOString(),

@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
-import { Request } from 'express';
+import { FastifyRequest, FastifyReply } from 'fastify';
 
 @Injectable()
 export class LoggingInterceptor implements NestInterceptor {
@@ -15,18 +15,18 @@ export class LoggingInterceptor implements NestInterceptor {
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     const ctx = context.switchToHttp();
-    const request = ctx.getRequest<Request>();
+    const request = ctx.getRequest<FastifyRequest>();
     const { method, url, ip } = request;
-    const userAgent = request.get('user-agent') || '';
+    const userAgent = request.headers['user-agent'] || '';
 
     const now = Date.now();
 
     return next.handle().pipe(
       tap({
         next: () => {
-          const response = ctx.getResponse();
-          const { statusCode } = response;
-          const contentLength = response.get('content-length');
+          const response = ctx.getResponse<FastifyReply>();
+          const statusCode = response.statusCode;
+          const contentLength = response.getHeader('content-length');
           const responseTime = Date.now() - now;
 
           this.logger.log(

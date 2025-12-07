@@ -9,7 +9,7 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserResponseDto } from './dto/user-response.dto';
 import { PaginationDto } from './dto/pagination.dto';
-import * as crypto from 'crypto';
+import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class UsersService {
@@ -27,8 +27,8 @@ export class UsersService {
       throw new ConflictException('User with this email already exists');
     }
 
-    // Hash password (in production, use bcrypt)
-    const hashedPassword = this.hashPassword(createUserDto.password);
+    // Hash password with bcrypt
+    const hashedPassword = await this.hashPassword(createUserDto.password);
 
     const user = await this.prisma.user.create({
       data: {
@@ -89,7 +89,7 @@ export class UsersService {
     const updateData: Record<string, unknown> = { ...updateUserDto };
 
     if (updateUserDto.password) {
-      updateData.password = this.hashPassword(updateUserDto.password);
+      updateData.password = await this.hashPassword(updateUserDto.password);
     }
 
     const user = await this.prisma.user.update({
@@ -111,9 +111,10 @@ export class UsersService {
     this.logger.log(`User deleted: ${id}`);
   }
 
-  // Simple password hashing (use bcrypt in production)
-  private hashPassword(password: string): string {
-    return crypto.createHash('sha256').update(password).digest('hex');
+  // Secure password hashing with bcrypt
+  private async hashPassword(password: string): Promise<string> {
+    const saltRounds = 12;
+    return bcrypt.hash(password, saltRounds);
   }
 
   private mapToResponse(user: {
