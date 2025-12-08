@@ -13,9 +13,6 @@ import databaseConfig from './config/database.config';
 import { PrismaModule } from './prisma/prisma.module';
 import { HealthModule } from './modules/health/health.module';
 import { UsersModule } from './modules/users/users.module';
-import { AuthModule } from './modules/auth/auth.module';
-import { AiModule } from './modules/ai';
-import { MessagesModule } from './modules/messages';
 
 // Common
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -82,9 +79,6 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
     // Feature modules
     HealthModule,
     UsersModule,
-    AuthModule,
-    AiModule,
-    MessagesModule,
   ],
   providers: [
     // Global exception filter
@@ -102,11 +96,11 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
       provide: APP_INTERCEPTOR,
       useClass: LoggingInterceptor,
     },
-    // Global throttler guard - disabled for now (Fastify compatibility issue)
-    // {
-    //   provide: APP_GUARD,
-    //   useClass: ThrottlerGuard,
-    // },
+    // Global throttler guard
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
   ],
 })
 export class AppModule {}

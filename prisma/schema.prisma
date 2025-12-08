@@ -10,91 +10,18 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Base User model for all user types
+// Example User model - extend as needed
 model User {
   id        String   @id @default(uuid())
   email     String   @unique
   name      String?
-  password  String?  // Optional for OAuth users
+  password  String
   role      Role     @default(USER)
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // OAuth fields
-  googleId     String?  @unique
-  avatar       String?
-  authProvider AuthProvider @default(LOCAL)
-
-  // Relations
-  student   Student?
-  tutor     Tutor?
-  
-  // Refresh tokens for JWT
-  refreshTokens RefreshToken[]
-
   @@map("users")
-}
-
-model Student {
-  id        String   @id @default(uuid())
-  userId    String   @unique
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  // Student specific fields
-  grade       String?
-  school      String?
-  phoneNumber String?
-  dateOfBirth DateTime?
-  
-  // Enrolled courses
-  enrollments Enrollment[]
-  
-  // Conversations started by student
-  conversations Conversation[]
-  
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("students")
-}
-
-model Tutor {
-  id        String   @id @default(uuid())
-  userId    String   @unique
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  // Tutor specific fields
-  bio           String?
-  qualification String?
-  experience    Int?      @default(0)
-  hourlyRate    Float?
-  isVerified    Boolean   @default(false)
-  isAvailable   Boolean   @default(true)
-  subjects      Subject[] @default([])
-  rating        Float?    @default(0)
-  
-  // Courses created by tutor
-  courses Course[]
-  
-  // Conversations assigned to tutor
-  conversations Conversation[]
-  
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("tutors")
-}
-
-model RefreshToken {
-  id        String   @id @default(uuid())
-  token     String   @unique
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt DateTime
-  createdAt DateTime @default(now())
-
-  @@map("refresh_tokens")
 }
 
 enum Role {
@@ -104,143 +31,15 @@ enum Role {
   STUDENT
 }
 
-enum AuthProvider {
-  LOCAL
-  GOOGLE
-}
-
-// Course model for Top Tutor platform
+// Example Course model for Top Tutor platform
 model Course {
   id          String   @id @default(uuid())
   title       String
   description String?
   price       Float    @default(0)
   isPublished Boolean  @default(false)
-  
-  tutorId     String
-  tutor       Tutor    @relation(fields: [tutorId], references: [id])
-  
-  enrollments Enrollment[]
-  
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   @@map("courses")
-}
-
-model Enrollment {
-  id        String   @id @default(uuid())
-  studentId String
-  student   Student  @relation(fields: [studentId], references: [id])
-  courseId  String
-  course    Course   @relation(fields: [courseId], references: [id])
-  
-  enrolledAt DateTime @default(now())
-  status     EnrollmentStatus @default(ACTIVE)
-  
-  @@unique([studentId, courseId])
-  @@map("enrollments")
-}
-
-enum EnrollmentStatus {
-  ACTIVE
-  COMPLETED
-  DROPPED
-}
-
-// Subject areas for tutor expertise and message classification
-enum Subject {
-  MATHEMATICS
-  PHYSICS
-  CHEMISTRY
-  BIOLOGY
-  ENGLISH
-  HISTORY
-  GEOGRAPHY
-  COMPUTER_SCIENCE
-  ECONOMICS
-  ACCOUNTING
-  GENERAL
-}
-
-// Conversation between student and tutor
-model Conversation {
-  id        String   @id @default(uuid())
-  
-  // Participants
-  studentId String
-  student   Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  tutorId   String?
-  tutor     Tutor?   @relation(fields: [tutorId], references: [id], onDelete: SetNull)
-  
-  // AI Classification results
-  subject     Subject   @default(GENERAL)
-  topic       String?
-  keywords    String[]  @default([])
-  urgency     Urgency   @default(NORMAL)
-  
-  // Status
-  status      ConversationStatus @default(PENDING)
-  
-  // Messages in this conversation
-  messages    Message[]
-  
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  @@map("conversations")
-}
-
-model Message {
-  id             String   @id @default(uuid())
-  conversationId String
-  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  
-  // Sender info
-  senderId       String
-  senderType     SenderType
-  
-  // Content
-  content        String?
-  messageType    MessageType @default(TEXT)
-  
-  // Audio specific fields
-  audioUrl       String?
-  audioDuration  Int?        // Duration in seconds
-  transcription  String?     // AI transcribed text from audio
-  
-  // Status
-  isRead         Boolean  @default(false)
-  
-  createdAt      DateTime @default(now())
-
-  @@map("messages")
-}
-
-enum Urgency {
-  LOW
-  NORMAL
-  HIGH
-  URGENT
-}
-
-enum ConversationStatus {
-  PENDING      // Waiting for tutor assignment
-  ASSIGNED     // Tutor assigned, waiting for response
-  ACTIVE       // Ongoing conversation
-  RESOLVED     // Issue resolved
-  CLOSED       // Conversation ended
-}
-
-enum MessageType {
-  TEXT
-  AUDIO
-  IMAGE
-  FILE
-}
-
-enum SenderType {
-  STUDENT
-  TUTOR
-  SYSTEM
 }
