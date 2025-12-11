@@ -13,6 +13,8 @@ import databaseConfig from './config/database.config';
 import { PrismaModule } from './prisma/prisma.module';
 import { HealthModule } from './modules/health/health.module';
 import { UsersModule } from './modules/users/users.module';
+import { AuthModule } from './modules/auth/auth.module';
+import { MessagesModule } from './modules/messages/messages.module';
 
 // Common
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -79,6 +81,8 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
     // Feature modules
     HealthModule,
     UsersModule,
+    AuthModule,
+    MessagesModule,
   ],
   providers: [
     // Global exception filter

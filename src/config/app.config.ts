@@ -6,5 +6,6 @@ export default registerAs('app', () => ({
   apiPrefix: process.env.API_PREFIX || 'api',
   apiVersion: process.env.API_VERSION || 'v1',
   corsOrigin: process.env.CORS_ORIGIN || '*',
+  frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
 }));
 
