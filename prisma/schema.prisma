@@ -59,10 +59,11 @@ model conversations {
   sharedAt    DateTime?
   sharedBy    String?   // User ID who shared
   
-  students  students           @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  tutors    tutors?            @relation(fields: [tutorId], references: [id])
-  messages  messages[]
-  call_logs call_logs[]
+  students      students        @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  tutors        tutors?         @relation(fields: [tutorId], references: [id])
+  messages      messages[]
+  call_logs     call_logs[]
+  waiting_queue waiting_queue?
 }
 
 model enrollments {
@@ -235,6 +236,7 @@ model tutors {
   conversations conversations[]
   courses       Course[]
   users         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tutor_availability_responses tutor_availability_responses[]
 }
 
 // Pending tutor notifications for smart routing
@@ -354,4 +356,68 @@ enum Urgency {
   NORMAL
   HIGH
   URGENT
+}
+
+enum WaitingQueueStatus {
+  WAITING
+  TUTORS_NOTIFIED
+  AVAILABILITY_COLLECTED
+  MATCHED
+  EXPIRED
+  CANCELLED
+}
+
+enum AvailabilityResponseType {
+  MINUTES_5
+  MINUTES_10
+  NOT_ANYTIME_SOON
+  CUSTOM
+}
+
+// Waiting queue for students waiting more than 2 minutes
+model waiting_queue {
+  id                  String             @id @default(uuid())
+  conversationId      String             @unique
+  studentId           String
+  subject             Subject
+  status              WaitingQueueStatus @default(WAITING)
+  waitStartedAt       DateTime           @default(now())
+  tutorsNotifiedAt    DateTime?
+  shortestWaitMinutes Int?               // Shortest time from all tutor responses
+  matchedTutorId      String?
+  matchedAt           DateTime?
+  expiresAt           DateTime?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  conversations               conversations                  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  tutor_availability_responses tutor_availability_responses[]
+
+  @@index([studentId])
+  @@index([status])
+  @@index([subject])
+}
+
+// Tutor responses with their availability time
+model tutor_availability_responses {
+  id              String                   @id @default(uuid())
+  waitingQueueId  String
+  tutorId         String
+  conversationId  String
+  responseType    AvailabilityResponseType
+  customMinutes   Int?                     // Only for CUSTOM type
+  freeAt          DateTime                 // When tutor will be free
+  reminderSent    Boolean                  @default(false)
+  reminderSentAt  DateTime?
+  sessionTaken    Boolean                  @default(false) // If another tutor took it
+  createdAt       DateTime                 @default(now())
+
+  waiting_queue waiting_queue @relation(fields: [waitingQueueId], references: [id], onDelete: Cascade)
+  tutors        tutors        @relation(fields: [tutorId], references: [id], onDelete: Cascade)
+
+  @@unique([waitingQueueId, tutorId])
+  @@index([waitingQueueId])
+  @@index([tutorId])
+  @@index([conversationId])
+  @@index([freeAt])
 }

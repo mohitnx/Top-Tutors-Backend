@@ -4,6 +4,7 @@ import {
   SubscribeMessage,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  OnGatewayInit,
   ConnectedSocket,
   MessageBody,
 } from '@nestjs/websockets';
@@ -13,6 +14,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TutorNotificationService, ConversationNotificationData, TutorInfo } from './tutor-notification.service';
+import { WaitingQueueService, TutorAvailabilityResponse } from './waiting-queue.service';
 import { ProcessingStatus, ProcessingUpdate } from './messages.service';
 
 interface AuthenticatedSocket extends Socket {
@@ -32,7 +34,7 @@ interface AuthenticatedSocket extends Socket {
   },
   transports: ['websocket', 'polling'],
 })
-export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit {
   @WebSocketServer()
   server: Server;
 
@@ -45,7 +47,27 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
     private readonly tutorNotificationService: TutorNotificationService,
+    private readonly waitingQueueService: WaitingQueueService,
   ) {}
+
+  afterInit() {
+    // Register callbacks for WaitingQueueService
+    this.waitingQueueService.registerCallbacks({
+      onNotifyBusyTutors: (conversationId, tutors, waitingQueue) => {
+        this.handleNotifyBusyTutors(conversationId, tutors, waitingQueue);
+      },
+      onNotifyStudent: (studentUserId, shortestWait, tutorResponses) => {
+        this.handleNotifyStudentWaitTime(studentUserId, shortestWait, tutorResponses);
+      },
+      onRemindTutor: (tutorUserId, conversationId, waitingQueueId) => {
+        this.handleRemindTutor(tutorUserId, conversationId, waitingQueueId);
+      },
+      onSessionTaken: (tutorUserId, conversationId) => {
+        this.handleSessionTaken(tutorUserId, conversationId);
+      },
+    });
+    this.logger.log('Waiting queue callbacks registered');
+  }
 
   async handleConnection(socket: AuthenticatedSocket) {
     try {
@@ -266,6 +288,12 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
         socket.user.profileId!,
       );
 
+      // Mark conversation as taken in waiting queue (notifies other waiting tutors)
+      await this.waitingQueueService.markConversationTaken(
+        data.conversationId,
+        socket.user.profileId!,
+      );
+
       // Get conversation details
       const conversation = await (this.prisma as any).conversations.findUnique({
         where: { id: data.conversationId },
@@ -374,6 +402,224 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
 
     return { success: true };
+  }
+
+  // ============ Waiting Queue & Tutor Availability Response ============
+
+  /**
+   * Tutor responds with their estimated availability time
+   * Called when busy tutor receives a waiting student notification
+   */
+  @SubscribeMessage('respondAvailability')
+  async handleRespondAvailability(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data: {
+      conversationId: string;
+      responseType: 'MINUTES_5' | 'MINUTES_10' | 'NOT_ANYTIME_SOON' | 'CUSTOM';
+      customMinutes?: number;
+    },
+  ) {
+    if (!socket.user || socket.user.role !== 'TUTOR') {
+      return { error: 'Only tutors can respond to availability requests' };
+    }
+
+    try {
+      const result = await this.waitingQueueService.recordTutorAvailability(
+        data.conversationId,
+        socket.user.profileId!,
+        {
+          tutorId: socket.user.profileId!,
+          responseType: data.responseType,
+          customMinutes: data.customMinutes,
+        },
+      );
+
+      this.logger.log(
+        `Tutor ${socket.user.email} responded with availability: ${data.responseType} (free at ${result.freeAt.toISOString()})`,
+      );
+
+      return {
+        success: true,
+        freeAt: result.freeAt,
+        minutesUntilFree: result.minutesUntilFree,
+        message: `You will be reminded in ${result.minutesUntilFree} minutes to take this session`,
+      };
+    } catch (error: any) {
+      this.logger.error(`Failed to record availability: ${error.message}`);
+      return { error: error.message };
+    }
+  }
+
+  /**
+   * Get waiting queue status for a conversation
+   */
+  @SubscribeMessage('getWaitingQueueStatus')
+  async handleGetWaitingQueueStatus(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data: { conversationId: string },
+  ) {
+    if (!socket.user) {
+      return { error: 'Not authenticated' };
+    }
+
+    try {
+      const queueInfo = await this.waitingQueueService.getWaitingQueue(data.conversationId);
+
+      if (!queueInfo) {
+        return { inQueue: false };
+      }
+
+      return {
+        inQueue: true,
+        status: queueInfo.status,
+        waitStartedAt: queueInfo.waitStartedAt,
+        shortestWaitMinutes: queueInfo.shortestWaitMinutes,
+        tutorResponses: queueInfo.tutorResponses,
+      };
+    } catch (error: any) {
+      return { error: error.message };
+    }
+  }
+
+  // ============ Waiting Queue Callback Handlers (called by WaitingQueueService) ============
+
+  /**
+   * Handle notification to busy tutors when student has been waiting 2+ minutes
+   */
+  private async handleNotifyBusyTutors(
+    conversationId: string,
+    tutors: any[],
+    waitingQueue: any,
+  ) {
+    // Get full conversation data
+    const conversation = await (this.prisma as any).conversations.findUnique({
+      where: { id: conversationId },
+      include: {
+        students: {
+          include: {
+            users: { select: { id: true, name: true, email: true, avatar: true } },
+          },
+        },
+        messages: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
+      },
+    });
+
+    if (!conversation) return;
+
+    const payload = {
+      type: 'WAITING_STUDENT',
+      conversation: {
+        id: conversation.id,
+        subject: conversation.subject,
+        topic: conversation.topic,
+        urgency: conversation.urgency,
+        status: conversation.status,
+        createdAt: conversation.createdAt,
+        student: {
+          id: conversation.students?.id,
+          name: conversation.students?.users?.name || 'Student',
+          avatar: conversation.students?.users?.avatar,
+        },
+        lastMessage: conversation.messages[0]?.content || null,
+      },
+      waitingQueue: {
+        id: waitingQueue.id,
+        waitingSince: waitingQueue.waitingSince,
+        waitingMinutes: Math.ceil((Date.now() - new Date(waitingQueue.waitingSince).getTime()) / 60000),
+      },
+      requiresAvailabilityResponse: true,
+    };
+
+    // Notify each busy tutor
+    for (const tutor of tutors) {
+      this.server.to(`user:${tutor.odID}`).emit('waitingStudentNotification', payload);
+      this.logger.log(`Sent waiting student notification to busy tutor ${tutor.email}`);
+    }
+  }
+
+  /**
+   * Notify student about shortest wait time from tutor responses
+   */
+  private handleNotifyStudentWaitTime(
+    studentUserId: string,
+    shortestWait: number,
+    tutorResponses: any[],
+  ) {
+    const payload = {
+      shortestWaitMinutes: shortestWait,
+      message: shortestWait <= 5
+        ? 'A tutor will be available very soon!'
+        : `A tutor will be available in approximately ${shortestWait} minutes`,
+      tutorResponses: tutorResponses.map(r => ({
+        tutorName: r.tutorName,
+        minutesUntilFree: r.minutesUntilFree,
+      })),
+    };
+
+    this.server.to(`user:${studentUserId}`).emit('tutorAvailabilityUpdate', payload);
+    this.logger.log(`Notified student ${studentUserId} about wait time: ${shortestWait} minutes`);
+  }
+
+  /**
+   * Remind tutor that their availability time has come
+   */
+  private async handleRemindTutor(
+    tutorUserId: string,
+    conversationId: string,
+    waitingQueueId: string,
+  ) {
+    // Get conversation details
+    const conversation = await (this.prisma as any).conversations.findUnique({
+      where: { id: conversationId },
+      include: {
+        students: {
+          include: {
+            users: { select: { id: true, name: true, avatar: true } },
+          },
+        },
+      },
+    });
+
+    if (!conversation || conversation.status !== 'PENDING') {
+      return;
+    }
+
+    const payload = {
+      type: 'AVAILABILITY_REMINDER',
+      conversationId,
+      waitingQueueId,
+      message: 'You said you would be free by now. A student is still waiting for help!',
+      conversation: {
+        id: conversation.id,
+        subject: conversation.subject,
+        topic: conversation.topic,
+        student: {
+          id: conversation.students?.id,
+          name: conversation.students?.users?.name || 'Student',
+          avatar: conversation.students?.users?.avatar,
+        },
+      },
+      canAcceptNow: true,
+    };
+
+    this.server.to(`user:${tutorUserId}`).emit('availabilityReminder', payload);
+    this.logger.log(`Sent availability reminder to tutor ${tutorUserId} for conversation ${conversationId}`);
+  }
+
+  /**
+   * Notify tutor that the session they were waiting for has been taken by another tutor
+   */
+  private handleSessionTaken(tutorUserId: string, conversationId: string) {
+    const payload = {
+      conversationId,
+      message: 'This session has been taken by another tutor',
+    };
+
+    this.server.to(`user:${tutorUserId}`).emit('sessionTaken', payload);
+    this.logger.log(`Notified tutor ${tutorUserId} that session ${conversationId} was taken`);
   }
 
   // ============ WebRTC Signaling for Audio/Video Calls ============
@@ -957,6 +1203,16 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
     setTimeout(() => {
       this.recentlyNotifiedConversations.delete(data.conversationId);
     }, 5000);
+
+    // Add to waiting queue for 2-minute timeout tracking
+    const isInQueue = await this.waitingQueueService.isInWaitingQueue(data.conversationId);
+    if (!isInQueue) {
+      await this.waitingQueueService.addToWaitingQueue(
+        data.conversationId,
+        data.studentId,
+        data.subject,
+      );
+    }
 
     // Emit initial status to student
     this.emitProcessingStatus(studentUserId, {

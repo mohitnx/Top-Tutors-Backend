@@ -5,6 +5,7 @@ import { MessagesController } from './messages.controller';
 import { MessagesService } from './messages.service';
 import { MessagesGateway } from './messages.gateway';
 import { TutorNotificationService } from './tutor-notification.service';
+import { WaitingQueueService } from './waiting-queue.service';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { AuthModule } from '../auth/auth.module';
 
@@ -20,7 +21,7 @@ import { AuthModule } from '../auth/auth.module';
     }),
   ],
   controllers: [MessagesController],
-  providers: [MessagesService, MessagesGateway, TutorNotificationService],
-  exports: [MessagesService, MessagesGateway, TutorNotificationService],
+  providers: [MessagesService, MessagesGateway, TutorNotificationService, WaitingQueueService],
+  exports: [MessagesService, MessagesGateway, TutorNotificationService, WaitingQueueService],
 })
 export class MessagesModule {}
