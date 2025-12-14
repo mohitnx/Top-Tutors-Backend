@@ -780,6 +780,21 @@ export class MessagesService {
     return tutors;
   }
 
+  /**
+   * Get tutor profile by user ID (for accepting conversations)
+   */
+  async getTutorByUserId(userId: string) {
+    const tutor = await (this.prisma as any).tutors.findUnique({
+      where: { userId },
+      include: {
+        users: {
+          select: { id: true, name: true, email: true, avatar: true },
+        },
+      },
+    });
+    return tutor;
+  }
+
   // ============ Private Helper Methods ============
 
   private async getUserProfileInfo(userId: string, userRole: string) {

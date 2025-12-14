@@ -364,15 +364,14 @@ export class MessagesController {
     @CurrentUser() user: any,
     @Param('conversationId') conversationId: string,
   ) {
-    // Get tutor profile
-    const tutors = await this.messagesService.findAvailableTutors('GENERAL');
-    const tutor = tutors.find((t: any) => t.users?.email === user.email);
+    // Get tutor profile by user ID directly
+    const tutor = await this.messagesService.getTutorByUserId(user.id);
 
     if (!tutor) {
       return { canAccept: false, reason: 'Tutor profile not found' };
     }
 
-    const result = await this.tutorNotificationService.canTutorAccept((tutor as any).id);
+    const result = await this.tutorNotificationService.canTutorAccept(tutor.id);
     
     // Also check if conversation is still pending
     const conversation = await this.messagesService.getConversation(conversationId, user.id, user.role);
@@ -403,9 +402,8 @@ export class MessagesController {
     @CurrentUser() user: any,
     @Param('conversationId') conversationId: string,
   ) {
-    // Get tutor profile
-    const tutor = await this.messagesService.findAvailableTutors('GENERAL')
-      .then(tutors => tutors.find((t: any) => t.users?.email === user.email));
+    // Get tutor profile by user ID directly
+    const tutor = await this.messagesService.getTutorByUserId(user.id);
 
     if (!tutor) {
       throw new BadRequestException('Tutor profile not found');
@@ -413,7 +411,7 @@ export class MessagesController {
 
     const result = await this.messagesService.tutorAcceptConversation(
       conversationId,
-      (tutor as any).id,
+      tutor.id,
       user.id,
     );
 
@@ -424,9 +422,9 @@ export class MessagesController {
       result.student.odID,
       conversationId,
       {
-        id: (tutor as any).id,
-        name: (tutor as any).users?.name || 'Tutor',
-        avatar: (tutor as any).users?.avatar,
+        id: tutor.id,
+        name: tutor.users?.name || 'Tutor',
+        avatar: tutor.users?.avatar,
       },
     );
 
@@ -535,16 +533,15 @@ export class MessagesController {
     @CurrentUser() user: any,
     @Body() dto: { busyUntil: string },
   ) {
-    // Get tutor profile ID
-    const tutors = await this.messagesService.findAvailableTutors('GENERAL');
-    const tutor = tutors.find((t: any) => t.users?.email === user.email);
+    // Get tutor profile by user ID directly
+    const tutor = await this.messagesService.getTutorByUserId(user.id);
 
     if (!tutor) {
       throw new BadRequestException('Tutor profile not found');
     }
 
     return this.messagesService.updateTutorBusyUntil(
-      (tutor as any).id,
+      tutor.id,
       new Date(dto.busyUntil),
     );
   }
