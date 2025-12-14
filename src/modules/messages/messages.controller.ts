@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Post,
@@ -619,5 +620,88 @@ export class MessagesController {
   @ApiOperation({ summary: 'DEBUG: Simple emit test' })
   async simpleEmitTest() {
     return this.messagesGateway.simpleEmitTest();
+  }
+
+  // ============ Message Reactions ============
+
+  @Post('messages/:messageId/reactions')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Add or toggle a reaction (like/dislike) on a message' })
+  @ApiResponse({ status: 200, description: 'Reaction added/updated/removed' })
+  async addReaction(
+    @CurrentUser() user: any,
+    @Param('messageId') messageId: string,
+    @Body() dto: { type: 'LIKE' | 'DISLIKE' },
+  ) {
+    return this.messagesService.addReaction(messageId, user.id, dto.type);
+  }
+
+  @Delete('messages/:messageId/reactions')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Remove your reaction from a message' })
+  @ApiResponse({ status: 200, description: 'Reaction removed' })
+  async removeReaction(
+    @CurrentUser() user: any,
+    @Param('messageId') messageId: string,
+  ) {
+    return this.messagesService.removeReaction(messageId, user.id);
+  }
+
+  @Get('messages/:messageId/reactions')
+  @ApiOperation({ summary: 'Get reaction summary for a message' })
+  @ApiResponse({ status: 200, description: 'Reaction counts and user reaction' })
+  async getMessageReactions(
+    @CurrentUser() user: any,
+    @Param('messageId') messageId: string,
+  ) {
+    return this.messagesService.getMessageReactions(messageId, user.id);
+  }
+
+  // ============ Conversation Sharing ============
+
+  @Post('conversations/:conversationId/share')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Share a conversation (generate share link)' })
+  @ApiResponse({ status: 200, description: 'Conversation shared, returns share URL' })
+  async shareConversation(
+    @CurrentUser() user: any,
+    @Param('conversationId') conversationId: string,
+  ) {
+    return this.messagesService.shareConversation(conversationId, user.id, user.role);
+  }
+
+  @Delete('conversations/:conversationId/share')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Stop sharing a conversation' })
+  @ApiResponse({ status: 200, description: 'Sharing disabled' })
+  async unshareConversation(
+    @CurrentUser() user: any,
+    @Param('conversationId') conversationId: string,
+  ) {
+    return this.messagesService.unshareConversation(conversationId, user.id, user.role);
+  }
+
+  @Get('conversations/:conversationId/share')
+  @ApiOperation({ summary: 'Get share status for a conversation' })
+  @ApiResponse({ status: 200, description: 'Share status and URL if shared' })
+  async getShareStatus(
+    @CurrentUser() user: any,
+    @Param('conversationId') conversationId: string,
+  ) {
+    return this.messagesService.getShareStatus(conversationId, user.id, user.role);
+  }
+
+  @Get('shared/:shareToken')
+  @ApiOperation({ summary: 'View a shared conversation (read-only, requires auth)' })
+  @ApiResponse({ status: 200, description: 'Shared conversation view' })
+  async getSharedConversation(
+    @CurrentUser() user: any,
+    @Param('shareToken') shareToken: string,
+  ) {
+    // User must be authenticated to view shared conversations
+    if (!user) {
+      throw new BadRequestException('Authentication required to view shared conversations');
+    }
+    return this.messagesService.getSharedConversation(shareToken);
   }
 }

@@ -52,6 +52,13 @@ model conversations {
   status    ConversationStatus @default(PENDING)
   createdAt DateTime           @default(now())
   updatedAt DateTime
+  
+  // Sharing feature
+  isShared    Boolean   @default(false)
+  shareToken  String?   @unique  // Unique token for sharing
+  sharedAt    DateTime?
+  sharedBy    String?   // User ID who shared
+  
   students  students           @relation(fields: [studentId], references: [id], onDelete: Cascade)
   tutors    tutors?            @relation(fields: [tutorId], references: [id])
   messages  messages[]
@@ -83,7 +90,33 @@ model messages {
   attachments    Json?         // Array of { url: string, name: string, type: string, size: number }
   isRead         Boolean       @default(false)
   createdAt      DateTime      @default(now())
+  
+  // Reaction counts (denormalized for performance)
+  likeCount      Int           @default(0)
+  dislikeCount   Int           @default(0)
+  
   conversations  conversations @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  reactions      message_reactions[]
+}
+
+// Message reactions (like/dislike)
+model message_reactions {
+  id        String       @id @default(uuid())
+  messageId String
+  userId    String
+  type      ReactionType
+  createdAt DateTime     @default(now())
+  
+  messages  messages     @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  
+  @@unique([messageId, userId])  // One reaction per user per message
+  @@index([messageId])
+  @@index([userId])
+}
+
+enum ReactionType {
+  LIKE
+  DISLIKE
 }
 
 model refresh_tokens {

@@ -1582,4 +1582,352 @@ IMPORTANT RULES:
       createdAt: call.createdAt,
     };
   }
+
+  // ============ Message Reactions ============
+
+  /**
+   * Add or update a reaction to a message
+   */
+  async addReaction(messageId: string, userId: string, type: 'LIKE' | 'DISLIKE') {
+    // Check if message exists
+    const message = await (this.prisma as any).messages.findUnique({
+      where: { id: messageId },
+      include: {
+        conversations: {
+          select: { studentId: true, tutorId: true },
+        },
+      },
+    });
+
+    if (!message) {
+      throw new NotFoundException('Message not found');
+    }
+
+    // Check if user has access to this conversation
+    const conversation = message.conversations;
+    // For now, allow any authenticated user to react (for shared conversations)
+    // In the future, could restrict to conversation participants
+
+    // Check for existing reaction
+    const existingReaction = await (this.prisma as any).message_reactions.findUnique({
+      where: {
+        messageId_userId: { messageId, userId },
+      },
+    });
+
+    if (existingReaction) {
+      if (existingReaction.type === type) {
+        // Same reaction - remove it (toggle off)
+        await (this.prisma as any).message_reactions.delete({
+          where: { id: existingReaction.id },
+        });
+
+        // Update counts
+        await this.updateReactionCounts(messageId);
+        
+        return { removed: true, type };
+      } else {
+        // Different reaction - update it
+        await (this.prisma as any).message_reactions.update({
+          where: { id: existingReaction.id },
+          data: { type },
+        });
+
+        // Update counts
+        await this.updateReactionCounts(messageId);
+        
+        return { updated: true, type };
+      }
+    }
+
+    // Create new reaction
+    const reaction = await (this.prisma as any).message_reactions.create({
+      data: {
+        messageId,
+        userId,
+        type,
+      },
+    });
+
+    // Update counts
+    await this.updateReactionCounts(messageId);
+
+    return { added: true, type, reaction };
+  }
+
+  /**
+   * Remove a reaction from a message
+   */
+  async removeReaction(messageId: string, userId: string) {
+    const existingReaction = await (this.prisma as any).message_reactions.findUnique({
+      where: {
+        messageId_userId: { messageId, userId },
+      },
+    });
+
+    if (!existingReaction) {
+      throw new NotFoundException('Reaction not found');
+    }
+
+    await (this.prisma as any).message_reactions.delete({
+      where: { id: existingReaction.id },
+    });
+
+    // Update counts
+    await this.updateReactionCounts(messageId);
+
+    return { success: true };
+  }
+
+  /**
+   * Get reaction summary for a message
+   */
+  async getMessageReactions(messageId: string, userId?: string) {
+    const message = await (this.prisma as any).messages.findUnique({
+      where: { id: messageId },
+      select: { likeCount: true, dislikeCount: true },
+    });
+
+    if (!message) {
+      throw new NotFoundException('Message not found');
+    }
+
+    let userReaction = null;
+    if (userId) {
+      const reaction = await (this.prisma as any).message_reactions.findUnique({
+        where: {
+          messageId_userId: { messageId, userId },
+        },
+      });
+      userReaction = reaction?.type || null;
+    }
+
+    return {
+      messageId,
+      likeCount: message.likeCount,
+      dislikeCount: message.dislikeCount,
+      userReaction,
+    };
+  }
+
+  /**
+   * Update reaction counts on message (denormalized)
+   */
+  private async updateReactionCounts(messageId: string) {
+    const [likeCount, dislikeCount] = await Promise.all([
+      (this.prisma as any).message_reactions.count({
+        where: { messageId, type: 'LIKE' },
+      }),
+      (this.prisma as any).message_reactions.count({
+        where: { messageId, type: 'DISLIKE' },
+      }),
+    ]);
+
+    await (this.prisma as any).messages.update({
+      where: { id: messageId },
+      data: { likeCount, dislikeCount },
+    });
+  }
+
+  // ============ Conversation Sharing ============
+
+  /**
+   * Generate a share token for a conversation
+   */
+  async shareConversation(conversationId: string, userId: string, userRole: string) {
+    const conversation = await (this.prisma as any).conversations.findUnique({
+      where: { id: conversationId },
+      include: {
+        students: { select: { userId: true } },
+        tutors: { select: { userId: true } },
+      },
+    });
+
+    if (!conversation) {
+      throw new NotFoundException('Conversation not found');
+    }
+
+    // Only conversation participants can share
+    const isStudent = conversation.students?.userId === userId;
+    const isTutor = conversation.tutors?.userId === userId;
+    const isAdmin = userRole === 'ADMIN';
+
+    if (!isStudent && !isTutor && !isAdmin) {
+      throw new ForbiddenException('Only conversation participants can share');
+    }
+
+    // Generate unique share token
+    const shareToken = this.generateShareToken();
+
+    const updatedConversation = await (this.prisma as any).conversations.update({
+      where: { id: conversationId },
+      data: {
+        isShared: true,
+        shareToken,
+        sharedAt: new Date(),
+        sharedBy: userId,
+      },
+    });
+
+    return {
+      conversationId,
+      isShared: true,
+      shareToken,
+      shareUrl: `/shared/${shareToken}`,
+      sharedAt: updatedConversation.sharedAt,
+    };
+  }
+
+  /**
+   * Disable sharing for a conversation
+   */
+  async unshareConversation(conversationId: string, userId: string, userRole: string) {
+    const conversation = await (this.prisma as any).conversations.findUnique({
+      where: { id: conversationId },
+      include: {
+        students: { select: { userId: true } },
+        tutors: { select: { userId: true } },
+      },
+    });
+
+    if (!conversation) {
+      throw new NotFoundException('Conversation not found');
+    }
+
+    // Only conversation participants can unshare
+    const isStudent = conversation.students?.userId === userId;
+    const isTutor = conversation.tutors?.userId === userId;
+    const isAdmin = userRole === 'ADMIN';
+
+    if (!isStudent && !isTutor && !isAdmin) {
+      throw new ForbiddenException('Only conversation participants can modify sharing');
+    }
+
+    await (this.prisma as any).conversations.update({
+      where: { id: conversationId },
+      data: {
+        isShared: false,
+        shareToken: null,
+        sharedAt: null,
+        sharedBy: null,
+      },
+    });
+
+    return {
+      conversationId,
+      isShared: false,
+    };
+  }
+
+  /**
+   * Get a shared conversation by share token (public view)
+   */
+  async getSharedConversation(shareToken: string) {
+    const conversation = await (this.prisma as any).conversations.findUnique({
+      where: { shareToken },
+      include: {
+        students: {
+          include: {
+            users: { select: { name: true } },
+          },
+        },
+        tutors: {
+          include: {
+            users: { select: { name: true } },
+          },
+        },
+        messages: {
+          orderBy: { createdAt: 'asc' },
+          select: {
+            id: true,
+            senderType: true,
+            content: true,
+            messageType: true,
+            likeCount: true,
+            dislikeCount: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+
+    if (!conversation) {
+      throw new NotFoundException('Shared conversation not found');
+    }
+
+    if (!conversation.isShared) {
+      throw new ForbiddenException('This conversation is no longer shared');
+    }
+
+    // Return anonymized view
+    return {
+      id: conversation.id,
+      subject: conversation.subject,
+      topic: conversation.topic,
+      studentName: this.anonymizeName(conversation.students?.users?.name || 'Student'),
+      tutorName: conversation.tutors?.users?.name || null,
+      status: conversation.status,
+      createdAt: conversation.createdAt,
+      messages: conversation.messages.map((msg: any) => ({
+        id: msg.id,
+        senderType: msg.senderType,
+        content: msg.content,
+        messageType: msg.messageType,
+        likeCount: msg.likeCount,
+        dislikeCount: msg.dislikeCount,
+        createdAt: msg.createdAt,
+      })),
+    };
+  }
+
+  /**
+   * Get share status for a conversation
+   */
+  async getShareStatus(conversationId: string, userId: string, userRole: string) {
+    const conversation = await (this.prisma as any).conversations.findUnique({
+      where: { id: conversationId },
+      select: {
+        isShared: true,
+        shareToken: true,
+        sharedAt: true,
+        sharedBy: true,
+      },
+    });
+
+    if (!conversation) {
+      throw new NotFoundException('Conversation not found');
+    }
+
+    return {
+      conversationId,
+      isShared: conversation.isShared,
+      shareToken: conversation.shareToken,
+      shareUrl: conversation.shareToken ? `/shared/${conversation.shareToken}` : null,
+      sharedAt: conversation.sharedAt,
+    };
+  }
+
+  /**
+   * Generate a unique share token
+   */
+  private generateShareToken(): string {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let token = '';
+    for (let i = 0; i < 12; i++) {
+      token += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return token;
+  }
+
+  /**
+   * Anonymize a name for shared view (show first name only or initials)
+   */
+  private anonymizeName(name: string): string {
+    if (!name) return 'Anonymous';
+    const parts = name.split(' ');
+    if (parts.length > 1) {
+      return `${parts[0]} ${parts[1].charAt(0)}.`;
+    }
+    return parts[0];
+  }
 }
