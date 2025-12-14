@@ -98,10 +98,33 @@ model refresh_tokens {
 model students {
   id            String          @id
   userId        String          @unique
+  
+  // Basic Info
   grade         String?
   school        String?
   phoneNumber   String?
   dateOfBirth   DateTime?
+  
+  // Parent/Guardian Info
+  parentName    String?
+  parentEmail   String?
+  parentPhone   String?
+  
+  // Location
+  address       String?
+  city          String?
+  state         String?
+  country       String?
+  timezone      String?
+  
+  // Academic Preferences
+  preferredSubjects Subject[]   @default([])
+  learningGoals     String?
+  academicLevel     String?     // e.g., "High School", "Undergraduate", "Graduate"
+  
+  // Profile Completion
+  profileCompleted  Boolean     @default(false)
+  
   createdAt     DateTime        @default(now())
   updatedAt     DateTime
   conversations conversations[]
@@ -112,19 +135,70 @@ model students {
 model tutors {
   id            String          @id
   userId        String          @unique
+  
+  // Basic Info
   bio           String?
-  qualification String?
-  experience    Int?            @default(0)
+  phoneNumber   String?
+  dateOfBirth   DateTime?
+  
+  // Location
+  address       String?
+  city          String?
+  state         String?
+  country       String?
+  timezone      String?
+  
+  // Academic Qualifications (JSON array: { institution, degree, field, year, gpa })
+  qualification String?                   // Legacy field - kept for compatibility
+  academicQualifications Json?            // Array of academic qualifications
+  
+  // Teaching Info
+  experience    Int?            @default(0)  // Years of experience
   hourlyRate    Float?
-  isVerified    Boolean         @default(false)
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime
+  subjects      Subject[]       @default([])
+  areasOfExpertise String?                 // Detailed expertise description
+  teachingPhilosophy String?
+  teachingStyle String?                    // e.g., "Interactive", "Lecture-based", "Project-based"
+  
+  // Certifications (JSON array: { name, issuedBy, issuedDate, expiryDate, url, verified })
+  certificates  Json?
+  
+  // Work & Research Experience (JSON array: { company, role, startDate, endDate, description, type })
+  workExperience    Json?
+  researchExperience String?
+  publications      String?               // Notable publications
+  
+  // Professional Info
+  linkedinUrl   String?
+  websiteUrl    String?
+  languages     String[]        @default([])  // Languages spoken
+  
+  // Availability
   isAvailable   Boolean         @default(true)
   isBusy        Boolean         @default(false)
   busyUntil     DateTime?
   currentConversationId String?
+  availabilitySchedule Json?              // { monday: [{start, end}], tuesday: [...], ... }
+  
+  // Stats & Ratings
   rating        Float?          @default(0)
-  subjects      Subject[]       @default([])
+  totalReviews  Int             @default(0)
+  totalStudentsTaught Int       @default(0)
+  totalSessionsCompleted Int    @default(0)
+  totalHoursTaught Float        @default(0)
+  
+  // Verification
+  isVerified    Boolean         @default(false)
+  verifiedAt    DateTime?
+  profileCompleted Boolean      @default(false)
+  
+  // Bank/Payment Info (for payouts) - encrypted in production
+  bankAccountNumber String?
+  bankName          String?
+  bankRoutingNumber String?
+  
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime
   conversations conversations[]
   courses       Course[]
   users         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
