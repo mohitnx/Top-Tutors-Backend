@@ -16,6 +16,7 @@ import { UsersModule } from './modules/users/users.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { MessagesModule } from './modules/messages/messages.module';
 import { ProfilesModule } from './modules/profiles/profiles.module';
+import { GeminiChatModule } from './modules/gemini-chat/gemini-chat.module';
 
 // Common
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -85,6 +86,7 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
     AuthModule,
     MessagesModule,
     ProfilesModule,
+    GeminiChatModule,
   ],
   providers: [
     // Global exception filter

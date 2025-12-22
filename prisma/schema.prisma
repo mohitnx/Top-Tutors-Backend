@@ -22,6 +22,7 @@ model User {
   refresh_tokens refresh_tokens[]
   students       students?
   tutors         tutors?
+  ai_chat_sessions ai_chat_sessions[]
 
   @@map("users")
 }
@@ -420,4 +421,92 @@ model tutor_availability_responses {
   @@index([tutorId])
   @@index([conversationId])
   @@index([freeAt])
+}
+
+// ============ AI Chat Sessions (Gemini) ============
+
+// AI Chat Session - like a Gemini conversation thread
+model ai_chat_sessions {
+  id            String              @id @default(uuid())
+  userId        String
+  title         String?             // Auto-generated or user-set title
+  summary       String?             // Brief summary of the conversation
+  subject       Subject?            // Detected or user-selected subject
+  isArchived    Boolean             @default(false)
+  isPinned      Boolean             @default(false)
+  lastMessageAt DateTime            @default(now())
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  
+  // Tutor request tracking
+  tutorRequestStatus  TutorRequestStatus?
+  tutorRequestedAt    DateTime?
+  linkedConversationId String?      // Links to conversations table if tutor connected
+  
+  users         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ai_messages   ai_messages[]
+  
+  @@index([userId])
+  @@index([lastMessageAt])
+  @@index([subject])
+}
+
+// AI Message - individual messages in an AI chat session
+model ai_messages {
+  id              String           @id @default(uuid())
+  sessionId       String
+  role            AIMessageRole    // USER, ASSISTANT, SYSTEM
+  content         String?          // Text content
+  
+  // Attachments (images, PDFs, audio)
+  attachments     Json?            // Array of { url, name, type, size, mimeType }
+  audioUrl        String?          // For audio messages
+  audioDuration   Int?             // Audio duration in seconds
+  transcription   String?          // Transcription of audio
+  
+  // Response metadata
+  isStreaming     Boolean          @default(false)  // Currently streaming
+  isComplete      Boolean          @default(true)   // Response complete
+  streamId        String?          // For reconnecting to streams
+  
+  // Error handling
+  hasError        Boolean          @default(false)
+  errorMessage    String?
+  retryCount      Int              @default(0)
+  
+  // Reactions/feedback
+  feedback        AIFeedbackType?  // GOOD, BAD, null
+  
+  // Token usage for analytics
+  promptTokens    Int?
+  completionTokens Int?
+  
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  
+  ai_chat_sessions ai_chat_sessions @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  
+  @@index([sessionId])
+  @@index([createdAt])
+  @@index([role])
+}
+
+enum AIMessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum AIFeedbackType {
+  GOOD
+  BAD
+}
+
+enum TutorRequestStatus {
+  NONE
+  REQUESTED
+  TUTOR_NOTIFIED
+  TUTOR_COMING
+  TUTOR_CONNECTED
+  CANCELLED
 }
