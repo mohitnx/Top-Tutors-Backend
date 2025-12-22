@@ -430,7 +430,7 @@ export class MessagesController {
     );
 
     // Emit status change
-    this.messagesGateway.emitStatusChange(conversationId, 'ASSIGNED');
+    await this.messagesGateway.emitStatusChange(conversationId, 'ASSIGNED');
 
     return conversation;
   }
@@ -479,7 +479,7 @@ export class MessagesController {
     }
 
     // Notify conversation participants about status change
-    this.messagesGateway.emitStatusChange(conversationId, 'ASSIGNED');
+    await this.messagesGateway.emitStatusChange(conversationId, 'ASSIGNED');
 
     return conversation;
   }
@@ -500,8 +500,12 @@ export class MessagesController {
       dto,
     );
 
-    // Notify participants about status change
-    this.messagesGateway.emitStatusChange(conversationId, dto.status);
+    // Notify both student and tutor about status change with who closed it
+    await this.messagesGateway.emitStatusChange(conversationId, dto.status, {
+      id: user.id,
+      role: user.role,
+      name: user.name || user.email,
+    });
 
     return result;
   }

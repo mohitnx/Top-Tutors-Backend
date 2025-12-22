@@ -343,6 +343,78 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
     return { success: true };
   }
 
+  @SubscribeMessage('closeConversation')
+  async handleCloseConversation(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data: { conversationId: string; status: 'RESOLVED' | 'CLOSED' },
+  ) {
+    if (!socket.user) {
+      return { error: 'Not authenticated' };
+    }
+
+    try {
+      // Verify access to conversation
+      const conversation = await (this.prisma as any).conversations.findUnique({
+        where: { id: data.conversationId },
+        include: {
+          students: {
+            include: { users: { select: { id: true } } },
+          },
+          tutors: {
+            include: { users: { select: { id: true } } },
+          },
+        },
+      });
+
+      if (!conversation) {
+        return { error: 'Conversation not found' };
+      }
+
+      // Check if user is part of this conversation
+      const studentUserId = conversation.students?.users?.id;
+      const tutorUserId = conversation.tutors?.users?.id;
+
+      if (socket.user.id !== studentUserId && socket.user.id !== tutorUserId && socket.user.role !== 'ADMIN') {
+        return { error: 'Access denied' };
+      }
+
+      if (!['ACTIVE', 'ASSIGNED'].includes(conversation.status)) {
+        return { error: 'Can only close active or assigned conversations' };
+      }
+
+      // Update conversation status
+      await (this.prisma as any).conversations.update({
+        where: { id: data.conversationId },
+        data: {
+          status: data.status,
+          updatedAt: new Date(),
+        },
+      });
+
+      // If tutor is closing, mark them as available
+      if (socket.user.role === 'TUTOR' && conversation.tutorId) {
+        await this.tutorNotificationService.setTutorAvailable(conversation.tutorId);
+      }
+
+      // Cancel any waiting queue entries
+      await this.waitingQueueService.cancelWaitingQueue(data.conversationId);
+
+      // Notify both parties
+      await this.emitStatusChange(data.conversationId, data.status, {
+        id: socket.user.id,
+        role: socket.user.role,
+        name: socket.user.email,
+      });
+
+      this.logger.log(`Conversation ${data.conversationId} closed by ${socket.user.email} with status ${data.status}`);
+
+      return { success: true, status: data.status };
+    } catch (error: any) {
+      this.logger.error(`Failed to close conversation: ${error.message}`);
+      return { error: error.message };
+    }
+  }
+
   // ============ Tutor Busy Status ============
 
   @SubscribeMessage('setAvailability')
@@ -1459,12 +1531,64 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   /**
    * Notify about conversation status change
+   * Emits to both conversation room AND directly to both student and tutor user rooms
    */
-  emitStatusChange(conversationId: string, status: string) {
+  async emitStatusChange(conversationId: string, status: string, closedBy?: { id: string; role: string; name?: string }) {
+    // Emit to conversation room
     this.server.to(`conversation:${conversationId}`).emit('statusChange', {
       conversationId,
       status,
+      closedBy,
     });
+
+    // Also emit directly to both student and tutor user rooms
+    // This ensures they get notified even if not in the conversation room
+    try {
+      const conversation = await (this.prisma as any).conversations.findUnique({
+        where: { id: conversationId },
+        include: {
+          students: {
+            include: {
+              users: { select: { id: true, name: true } },
+            },
+          },
+          tutors: {
+            include: {
+              users: { select: { id: true, name: true } },
+            },
+          },
+        },
+      });
+
+      if (!conversation) return;
+
+      const payload = {
+        conversationId,
+        status,
+        closedBy,
+        conversation: {
+          id: conversation.id,
+          subject: conversation.subject,
+          topic: conversation.topic,
+          status,
+        },
+        closedAt: new Date().toISOString(),
+      };
+
+      // Notify student
+      if (conversation.students?.users?.id) {
+        this.server.to(`user:${conversation.students.users.id}`).emit('conversationClosed', payload);
+        this.logger.log(`Notified student ${conversation.students.users.id} about session ${status}`);
+      }
+
+      // Notify tutor
+      if (conversation.tutors?.users?.id) {
+        this.server.to(`user:${conversation.tutors.users.id}`).emit('conversationClosed', payload);
+        this.logger.log(`Notified tutor ${conversation.tutors.users.id} about session ${status}`);
+      }
+    } catch (error: any) {
+      this.logger.error(`Failed to emit status change to user rooms: ${error.message}`);
+    }
   }
 
   /**
