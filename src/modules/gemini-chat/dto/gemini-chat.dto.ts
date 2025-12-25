@@ -92,7 +92,7 @@ export class SendMessageDto {
   @ApiPropertyOptional({ description: 'Enable streaming response' })
   @IsOptional()
   @IsBoolean()
-  stream?: boolean = true;
+  stream?: boolean = false;
 }
 
 export class SendAudioMessageDto {

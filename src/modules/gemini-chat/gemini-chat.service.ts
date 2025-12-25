@@ -111,11 +111,11 @@ export class GeminiChatService {
    * Create a new chat session
    */
   async createSession(userId: string, dto: CreateSessionDto): Promise<SessionResponse> {
-    const session = await (this.prisma as any).ai_chat_sessions.create({
+    const session = await this.prisma.ai_chat_sessions.create({
       data: {
         userId,
         title: dto.title || null,
-        subject: dto.subject || null,
+        subject: dto.subject as any,
       },
     });
 
@@ -153,7 +153,7 @@ export class GeminiChatService {
     }
 
     const [sessions, total] = await Promise.all([
-      (this.prisma as any).ai_chat_sessions.findMany({
+      this.prisma.ai_chat_sessions.findMany({
         where: whereClause,
         orderBy: [
           { isPinned: 'desc' },
@@ -176,7 +176,7 @@ export class GeminiChatService {
           },
         },
       }),
-      (this.prisma as any).ai_chat_sessions.count({ where: whereClause }),
+      this.prisma.ai_chat_sessions.count({ where: whereClause }),
     ]);
 
     return {
@@ -195,7 +195,7 @@ export class GeminiChatService {
     session: SessionResponse;
     messages: MessageResponse[];
   }> {
-    const session = await (this.prisma as any).ai_chat_sessions.findFirst({
+    const session = await this.prisma.ai_chat_sessions.findFirst({
       where: { id: sessionId, userId },
       include: {
         ai_messages: {
@@ -221,7 +221,7 @@ export class GeminiChatService {
    * Update session (title, pin, archive)
    */
   async updateSession(sessionId: string, userId: string, dto: UpdateSessionDto): Promise<SessionResponse> {
-    const session = await (this.prisma as any).ai_chat_sessions.findFirst({
+    const session = await this.prisma.ai_chat_sessions.findFirst({
       where: { id: sessionId, userId },
     });
 
@@ -229,7 +229,7 @@ export class GeminiChatService {
       throw new NotFoundException('Session not found');
     }
 
-    const updated = await (this.prisma as any).ai_chat_sessions.update({
+    const updated = await this.prisma.ai_chat_sessions.update({
       where: { id: sessionId },
       data: {
         ...(dto.title !== undefined && { title: dto.title }),
@@ -245,7 +245,7 @@ export class GeminiChatService {
    * Delete a session
    */
   async deleteSession(sessionId: string, userId: string): Promise<{ success: boolean }> {
-    const session = await (this.prisma as any).ai_chat_sessions.findFirst({
+    const session = await this.prisma.ai_chat_sessions.findFirst({
       where: { id: sessionId, userId },
     });
 
@@ -253,7 +253,7 @@ export class GeminiChatService {
       throw new NotFoundException('Session not found');
     }
 
-    await (this.prisma as any).ai_chat_sessions.delete({
+    await this.prisma.ai_chat_sessions.delete({
       where: { id: sessionId },
     });
 
@@ -266,31 +266,35 @@ export class GeminiChatService {
    * Send a message and get AI response (non-streaming)
    */
   async sendMessage(
-    userId: string, 
-    dto: SendMessageDto, 
+    userId: string,
+    dto: SendMessageDto,
     attachments?: Express.Multer.File[]
   ): Promise<{
     userMessage: MessageResponse;
     aiMessage: MessageResponse;
     session: SessionResponse;
   }> {
+    this.logger.log(`sendMessage called for user ${userId}, content: ${dto.content?.substring(0, 50)}...`);
+
     if (!this.genAI) {
+      this.logger.error('Gemini AI not configured');
       throw new InternalServerErrorException('Gemini AI not configured');
     }
 
     const model = await this.getWorkingModel();
+    this.logger.log(`Using model: ${model?.model}`);
 
     // Get or create session
     let session: any;
     if (dto.sessionId) {
-      session = await (this.prisma as any).ai_chat_sessions.findFirst({
+      session = await this.prisma.ai_chat_sessions.findFirst({
         where: { id: dto.sessionId, userId },
       });
       if (!session) {
         throw new NotFoundException('Session not found');
       }
     } else {
-      session = await (this.prisma as any).ai_chat_sessions.create({
+      session = await this.prisma.ai_chat_sessions.create({
         data: { userId },
       });
     }
@@ -299,12 +303,12 @@ export class GeminiChatService {
     const processedAttachments = await this.processAttachments(attachments);
 
     // Create user message
-    const userMessage = await (this.prisma as any).ai_messages.create({
+    const userMessage = await this.prisma.ai_messages.create({
       data: {
         sessionId: session.id,
         role: 'USER',
         content: dto.content || null,
-        attachments: processedAttachments.length > 0 ? processedAttachments : null,
+        attachments: processedAttachments.length > 0 ? (processedAttachments as any) : undefined,
       },
     });
 
@@ -315,6 +319,8 @@ export class GeminiChatService {
     const prompt = await this.buildPrompt(dto.content || '', attachments);
 
     try {
+      this.logger.log(`Generating content with history length: ${history.length}, prompt length: ${prompt.length}`);
+
       // Generate response
       const result = await model.generateContent({
         contents: [...history, { role: 'user', parts: prompt }],
@@ -323,8 +329,10 @@ export class GeminiChatService {
       const responseText = result.response.text();
       const usageMetadata = result.response.usageMetadata;
 
+      this.logger.log(`Generated response: ${responseText?.substring(0, 100)}..., tokens: ${usageMetadata?.promptTokenCount}/${usageMetadata?.candidatesTokenCount}`);
+
       // Create AI message
-      const aiMessage = await (this.prisma as any).ai_messages.create({
+      const aiMessage = await this.prisma.ai_messages.create({
         data: {
           sessionId: session.id,
           role: 'ASSISTANT',
@@ -335,12 +343,16 @@ export class GeminiChatService {
         },
       });
 
+      this.logger.log(`Created AI message with ID: ${aiMessage.id}`);
+
       // Update session
       await this.updateSessionAfterMessage(session.id, dto.content || '', responseText);
 
-      const updatedSession = await (this.prisma as any).ai_chat_sessions.findUnique({
+      const updatedSession = await this.prisma.ai_chat_sessions.findUnique({
         where: { id: session.id },
       });
+
+      this.logger.log(`Returning response with session ID: ${updatedSession?.id}`);
 
       return {
         userMessage: this.formatMessage(userMessage),
@@ -348,8 +360,10 @@ export class GeminiChatService {
         session: this.formatSession(updatedSession),
       };
     } catch (error: any) {
+      this.logger.error(`Error generating AI response: ${error.message}`, error.stack);
+
       // Create error message
-      const aiMessage = await (this.prisma as any).ai_messages.create({
+      const aiMessage = await this.prisma.ai_messages.create({
         data: {
           sessionId: session.id,
           role: 'ASSISTANT',
@@ -359,6 +373,8 @@ export class GeminiChatService {
           isComplete: false,
         },
       });
+
+      this.logger.log(`Created error message with ID: ${aiMessage.id}`);
 
       throw new InternalServerErrorException({
         message: 'Failed to generate AI response',
@@ -389,14 +405,14 @@ export class GeminiChatService {
     // Get or create session
     let session: any;
     if (dto.sessionId) {
-      session = await (this.prisma as any).ai_chat_sessions.findFirst({
+      session = await this.prisma.ai_chat_sessions.findFirst({
         where: { id: dto.sessionId, userId },
       });
       if (!session) {
         throw new NotFoundException('Session not found');
       }
     } else {
-      session = await (this.prisma as any).ai_chat_sessions.create({
+      session = await this.prisma.ai_chat_sessions.create({
         data: { userId },
       });
     }
@@ -405,18 +421,18 @@ export class GeminiChatService {
     const processedAttachments = await this.processAttachments(attachments);
 
     // Create user message
-    const userMessage = await (this.prisma as any).ai_messages.create({
+    const userMessage = await this.prisma.ai_messages.create({
       data: {
         sessionId: session.id,
         role: 'USER',
         content: dto.content || null,
-        attachments: processedAttachments.length > 0 ? processedAttachments : null,
+        attachments: processedAttachments.length > 0 ? (processedAttachments as any) : undefined,
       },
     });
 
     // Create placeholder AI message
     const streamId = uuidv4();
-    const aiMessage = await (this.prisma as any).ai_messages.create({
+    const aiMessage = await this.prisma.ai_messages.create({
       data: {
         sessionId: session.id,
         role: 'ASSISTANT',
@@ -513,7 +529,7 @@ export class GeminiChatService {
       const usageMetadata = finalResponse.usageMetadata;
 
       // Update message in database
-      await (this.prisma as any).ai_messages.update({
+      await this.prisma.ai_messages.update({
         where: { id: messageId },
         data: {
           content: fullContent,
@@ -554,7 +570,7 @@ export class GeminiChatService {
       this.logger.error(`Streaming error: ${error.message}`);
 
       // Update message with error
-      await (this.prisma as any).ai_messages.update({
+      await this.prisma.ai_messages.update({
         where: { id: messageId },
         data: {
           isStreaming: false,
@@ -587,7 +603,7 @@ export class GeminiChatService {
     }
 
     // Check database for completed stream
-    const message = await (this.prisma as any).ai_messages.findFirst({
+    const message = await this.prisma.ai_messages.findFirst({
       where: { streamId },
     });
 
@@ -606,7 +622,7 @@ export class GeminiChatService {
    */
   async retryMessage(messageId: string, userId: string): Promise<StreamingResponse> {
     // Get the failed message
-    const failedMessage = await (this.prisma as any).ai_messages.findFirst({
+    const failedMessage = await this.prisma.ai_messages.findFirst({
       where: { id: messageId },
       include: { ai_chat_sessions: true },
     });
@@ -624,7 +640,7 @@ export class GeminiChatService {
     }
 
     // Get the user message before this one
-    const userMessage = await (this.prisma as any).ai_messages.findFirst({
+    const userMessage = await this.prisma.ai_messages.findFirst({
       where: {
         sessionId: failedMessage.sessionId,
         role: 'USER',
@@ -638,19 +654,19 @@ export class GeminiChatService {
     }
 
     // Delete the failed message
-    await (this.prisma as any).ai_messages.delete({
+    await this.prisma.ai_messages.delete({
       where: { id: messageId },
     });
 
     // Update retry count
-    await (this.prisma as any).ai_messages.update({
+    await this.prisma.ai_messages.update({
       where: { id: userMessage.id },
       data: { retryCount: { increment: 1 } },
     });
 
     // Resend the message
     return this.sendMessageStreaming(userId, {
-      content: userMessage.content,
+      content: userMessage.content || undefined,
       sessionId: failedMessage.sessionId,
     });
   }
@@ -663,7 +679,7 @@ export class GeminiChatService {
     userId: string,
     feedback: 'GOOD' | 'BAD',
   ): Promise<MessageResponse> {
-    const message = await (this.prisma as any).ai_messages.findFirst({
+    const message = await this.prisma.ai_messages.findFirst({
       where: { id: messageId },
       include: { ai_chat_sessions: true },
     });
@@ -672,7 +688,7 @@ export class GeminiChatService {
       throw new NotFoundException('Message not found');
     }
 
-    const updated = await (this.prisma as any).ai_messages.update({
+    const updated = await this.prisma.ai_messages.update({
       where: { id: messageId },
       data: { feedback },
     });
@@ -700,14 +716,14 @@ export class GeminiChatService {
     // Get or create session
     let session: any;
     if (sessionId) {
-      session = await (this.prisma as any).ai_chat_sessions.findFirst({
+      session = await this.prisma.ai_chat_sessions.findFirst({
         where: { id: sessionId, userId },
       });
       if (!session) {
         throw new NotFoundException('Session not found');
       }
     } else {
-      session = await (this.prisma as any).ai_chat_sessions.create({
+      session = await this.prisma.ai_chat_sessions.create({
         data: { userId },
       });
     }
@@ -716,7 +732,7 @@ export class GeminiChatService {
     const audioUrl = await this.storeFile(file, 'audio');
 
     // Create user message with audio
-    await (this.prisma as any).ai_messages.create({
+    await this.prisma.ai_messages.create({
       data: {
         sessionId: session.id,
         role: 'USER',
@@ -791,7 +807,7 @@ export class GeminiChatService {
     status: string;
     linkedConversationId?: string;
   }> {
-    const session = await (this.prisma as any).ai_chat_sessions.findFirst({
+    const session = await this.prisma.ai_chat_sessions.findFirst({
       where: { id: sessionId, userId },
       include: {
         ai_messages: {
@@ -813,7 +829,7 @@ export class GeminiChatService {
     }
 
     // Get user's student profile
-    const student = await (this.prisma as any).students.findUnique({
+    const student = await this.prisma.students.findUnique({
       where: { userId },
     });
 
@@ -822,16 +838,16 @@ export class GeminiChatService {
     }
 
     // Analyze conversation to determine subject if not provided
-    const detectedSubject = subject || session.subject || await this.detectSubject(session.ai_messages);
+    const detectedSubject = subject || session.subject || await this.detectSubject(session.ai_messages.filter(m => m.content !== null).map(m => ({ content: m.content || undefined })));
 
     // Create a conversation for tutor matching
-    const conversation = await (this.prisma as any).conversations.create({
+    const conversation = await this.prisma.conversations.create({
       data: {
         id: uuidv4(),
         studentId: student.id,
-        subject: detectedSubject,
+        subject: detectedSubject as any,
         topic: session.title || 'Help Request from AI Chat',
-        urgency: urgency,
+        urgency: urgency as any,
         status: 'PENDING',
         updatedAt: new Date(),
       },
@@ -844,7 +860,7 @@ export class GeminiChatService {
       .join('\n\n');
 
     // Create initial message with context
-    await (this.prisma as any).messages.create({
+    await this.prisma.messages.create({
       data: {
         id: uuidv4(),
         conversationId: conversation.id,
@@ -856,13 +872,13 @@ export class GeminiChatService {
     });
 
     // Update session with tutor request status
-    await (this.prisma as any).ai_chat_sessions.update({
+    await this.prisma.ai_chat_sessions.update({
       where: { id: sessionId },
       data: {
         tutorRequestStatus: 'REQUESTED',
         tutorRequestedAt: new Date(),
         linkedConversationId: conversation.id,
-        subject: detectedSubject,
+        subject: detectedSubject as any,
       },
     });
 
@@ -877,7 +893,7 @@ export class GeminiChatService {
    * Cancel tutor request
    */
   async cancelTutorRequest(userId: string, sessionId: string): Promise<{ success: boolean }> {
-    const session = await (this.prisma as any).ai_chat_sessions.findFirst({
+    const session = await this.prisma.ai_chat_sessions.findFirst({
       where: { id: sessionId, userId },
     });
 
@@ -895,14 +911,14 @@ export class GeminiChatService {
 
     // Cancel the linked conversation
     if (session.linkedConversationId) {
-      await (this.prisma as any).conversations.update({
+      await this.prisma.conversations.update({
         where: { id: session.linkedConversationId },
         data: { status: 'CLOSED', updatedAt: new Date() },
       });
     }
 
     // Update session
-    await (this.prisma as any).ai_chat_sessions.update({
+    await this.prisma.ai_chat_sessions.update({
       where: { id: sessionId },
       data: {
         tutorRequestStatus: 'CANCELLED',
@@ -921,7 +937,7 @@ export class GeminiChatService {
     conversationId?: string;
     estimatedWait?: string;
   }> {
-    const session = await (this.prisma as any).ai_chat_sessions.findFirst({
+    const session = await this.prisma.ai_chat_sessions.findFirst({
       where: { id: sessionId, userId },
     });
 
@@ -933,7 +949,7 @@ export class GeminiChatService {
     let estimatedWait = null;
 
     if (session.linkedConversationId) {
-      const conversation = await (this.prisma as any).conversations.findUnique({
+      const conversation = await this.prisma.conversations.findUnique({
         where: { id: session.linkedConversationId },
         include: {
           tutors: {
@@ -1027,7 +1043,7 @@ export class GeminiChatService {
   }
 
   private async getConversationHistory(sessionId: string, excludeMessageId?: string): Promise<Content[]> {
-    const messages = await (this.prisma as any).ai_messages.findMany({
+    const messages = await this.prisma.ai_messages.findMany({
       where: {
         sessionId,
         role: { in: ['USER', 'ASSISTANT'] },
@@ -1046,7 +1062,7 @@ export class GeminiChatService {
   }
 
   private async updateSessionAfterMessage(sessionId: string, userContent: string, aiContent: string): Promise<void> {
-    const session = await (this.prisma as any).ai_chat_sessions.findUnique({
+    const session = await this.prisma.ai_chat_sessions.findUnique({
       where: { id: sessionId },
     });
 
@@ -1055,16 +1071,16 @@ export class GeminiChatService {
     };
 
     // Auto-generate title if not set
-    if (!session.title) {
+    if (session && !session.title) {
       updates.title = await this.generateTitle(userContent);
     }
 
     // Detect subject if not set
-    if (!session.subject) {
+    if (session && !session.subject) {
       updates.subject = await this.detectSubject([{ content: userContent }]);
     }
 
-    await (this.prisma as any).ai_chat_sessions.update({
+    await this.prisma.ai_chat_sessions.update({
       where: { id: sessionId },
       data: updates,
     });

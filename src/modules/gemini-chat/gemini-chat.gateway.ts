@@ -8,11 +8,12 @@ import {
   MessageBody,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger } from '@nestjs/common';
+import { Logger, Inject, forwardRef } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { GeminiChatService } from './gemini-chat.service';
+import { TutorSessionGateway } from './tutor-session.gateway';
 import { StreamChunk, TutorStatusUpdate } from './dto';
 
 interface AuthenticatedSocket extends Socket {
@@ -43,6 +44,8 @@ export class GeminiChatGateway implements OnGatewayConnection, OnGatewayDisconne
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
     private readonly geminiChatService: GeminiChatService,
+    @Inject(forwardRef(() => TutorSessionGateway))
+    private readonly tutorSessionGateway: TutorSessionGateway,
   ) {}
 
   async handleConnection(socket: AuthenticatedSocket) {
@@ -115,7 +118,7 @@ export class GeminiChatGateway implements OnGatewayConnection, OnGatewayDisconne
       return { error: 'Session not found' };
     }
 
-    socket.join(`session:${sessionId}`);
+    socket.join(`ai:${sessionId}`);
     this.logger.log(`User ${socket.user.email} joined session ${sessionId}`);
 
     return { success: true, sessionId };

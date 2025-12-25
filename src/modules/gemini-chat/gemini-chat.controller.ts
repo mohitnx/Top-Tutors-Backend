@@ -30,6 +30,7 @@ import {
 } from '@nestjs/swagger';
 import { GeminiChatService } from './gemini-chat.service';
 import { GeminiChatGateway } from './gemini-chat.gateway';
+import { Logger } from '@nestjs/common';
 import {
   CreateSessionDto,
   UpdateSessionDto,
@@ -48,6 +49,8 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
 export class GeminiChatController {
+  private readonly logger = new Logger(GeminiChatController.name);
+
   constructor(
     private readonly geminiChatService: GeminiChatService,
     private readonly geminiChatGateway: GeminiChatGateway,
@@ -122,16 +125,23 @@ export class GeminiChatController {
     @CurrentUser() user: any,
     @Body() dto: SendMessageDto,
   ) {
+    this.logger.log(`Sending message for user ${user.id}, stream: ${dto.stream}`);
+
     // Non-streaming response for simple cases
     if (!dto.stream) {
-      return this.geminiChatService.sendMessage(user.id, dto);
+      this.logger.log('Using non-streaming response');
+      const result = await this.geminiChatService.sendMessage(user.id, dto);
+      this.logger.log(`Non-streaming result: ${JSON.stringify(result)}`);
+      return result;
     }
 
     // For streaming, return message IDs and use WebSocket for content
+    this.logger.log('Using streaming response');
     const result = await this.geminiChatService.sendMessageStreaming(user.id, dto);
-    
+
     // Set up event forwarding to WebSocket
     result.emitter.on('chunk', (chunk) => {
+      this.logger.log(`Emitting chunk: ${chunk.type}`);
       this.geminiChatGateway.emitStreamChunk(user.id, chunk);
     });
 

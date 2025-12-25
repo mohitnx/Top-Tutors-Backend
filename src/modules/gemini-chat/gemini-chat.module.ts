@@ -4,6 +4,9 @@ import { MulterModule } from '@nestjs/platform-express';
 import { GeminiChatController } from './gemini-chat.controller';
 import { GeminiChatService } from './gemini-chat.service';
 import { GeminiChatGateway } from './gemini-chat.gateway';
+import { TutorSessionController } from './tutor-session.controller';
+import { TutorSessionService } from './tutor-session.service';
+import { TutorSessionGateway } from './tutor-session.gateway';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { AuthModule } from '../auth/auth.module';
 import { MessagesModule } from '../messages/messages.module';
@@ -20,9 +23,13 @@ import { MessagesModule } from '../messages/messages.module';
       },
     }),
   ],
-  controllers: [GeminiChatController],
-  providers: [GeminiChatService, GeminiChatGateway],
-  exports: [GeminiChatService, GeminiChatGateway],
+  controllers: [GeminiChatController, TutorSessionController],
+  providers: [
+    GeminiChatService,
+    GeminiChatGateway,
+    TutorSessionService,
+    TutorSessionGateway,
+  ],
 })
 export class GeminiChatModule {}
 

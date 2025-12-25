@@ -165,6 +165,7 @@ model students {
   conversations conversations[]
   enrollments   enrollments[]
   users         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tutor_sessions tutor_sessions[]
 }
 
 model tutors {
@@ -238,6 +239,7 @@ model tutors {
   courses       Course[]
   users         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   tutor_availability_responses tutor_availability_responses[]
+  tutor_sessions tutor_sessions[]
 }
 
 // Pending tutor notifications for smart routing
@@ -443,8 +445,18 @@ model ai_chat_sessions {
   tutorRequestedAt    DateTime?
   linkedConversationId String?      // Links to conversations table if tutor connected
   
+  // Live sharing with tutor
+  liveSharingEnabled  Boolean       @default(false)  // Student consent to share live chat
+  liveSharingEnabledAt DateTime?
+  
+  // Tutor session summary (generated when tutor is requested)
+  tutorSummary        String?       // Detailed summary for tutor
+  tutorSummaryGeneratedAt DateTime?
+  messageSnapshotCount Int?         // Number of messages at summary time
+  
   users         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   ai_messages   ai_messages[]
+  tutor_sessions tutor_sessions[]
   
   @@index([userId])
   @@index([lastMessageAt])
@@ -509,4 +521,73 @@ enum TutorRequestStatus {
   TUTOR_COMING
   TUTOR_CONNECTED
   CANCELLED
+}
+
+// Tutor session - when a tutor accepts a student's help request
+model tutor_sessions {
+  id                  String              @id @default(uuid())
+  aiSessionId         String              // Link to ai_chat_sessions
+  tutorId             String?             // Tutor profile ID (null until tutor accepts)
+  studentId           String              // Student profile ID
+  
+  // Session status
+  status              TutorSessionStatus  @default(PENDING)
+  acceptedAt          DateTime?
+  startedAt           DateTime?
+  endedAt             DateTime?
+  
+  // Summary and context
+  summary             String?             // AI-generated summary of chat
+  detectedTopic       String?             // Detected topic from chat
+  detectedSubject     Subject?            // Detected subject
+  keywords            String[]            @default([])
+  
+  // Snapshot of messages at request time
+  messageSnapshot     Json?               // Array of messages at request time
+  snapshotMessageCount Int?
+  
+  // Live sharing
+  liveSharingConsent  Boolean             @default(false)
+  liveSharingConsentAt DateTime?
+  
+  // Daily.co video/audio call
+  dailyRoomName       String?             // Daily.co room name
+  dailyRoomUrl        String?             // Full room URL
+  dailyRoomToken      String?             // Host token for tutor
+  callStartedAt       DateTime?
+  callEndedAt         DateTime?
+  callDuration        Int?                // Duration in seconds
+  
+  // Excalidraw whiteboard
+  whiteboardEnabled   Boolean             @default(false)
+  whiteboardData      Json?               // Excalidraw scene data
+  whiteboardRoomId    String?             // Collaborative room ID
+  
+  // Screen sharing
+  screenShareEnabled  Boolean             @default(false)
+  
+  // Session notes
+  tutorNotes          String?             // Private notes by tutor
+  studentRating       Int?                // 1-5 rating by student
+  studentFeedback     String?             // Feedback from student
+  
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  
+  ai_chat_sessions    ai_chat_sessions    @relation(fields: [aiSessionId], references: [id], onDelete: Cascade)
+  tutors              tutors?             @relation(fields: [tutorId], references: [id], onDelete: Cascade)
+  students            students            @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  
+  @@index([aiSessionId])
+  @@index([tutorId])
+  @@index([studentId])
+  @@index([status])
+}
+
+enum TutorSessionStatus {
+  PENDING       // Waiting for tutor to accept
+  ACCEPTED      // Tutor accepted, preparing session
+  ACTIVE        // Session in progress
+  COMPLETED     // Session ended normally
+  CANCELLED     // Session cancelled
 }
