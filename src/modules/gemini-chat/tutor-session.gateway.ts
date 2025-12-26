@@ -263,7 +263,11 @@ export class TutorSessionGateway implements OnGatewayConnection, OnGatewayDiscon
     };
 
     // Broadcast to others in the session (excluding sender)
-    client.to(`session:${sessionId}`).emit('whiteboardUpdate', updatePayload);
+    const roomName = `session:${sessionId}`;
+    const roomMembers = this.sessionRooms.get(sessionId);
+    this.logger.log(`📤 Broadcasting to room ${roomName} - Members: ${roomMembers?.size || 0}, Sender: ${clientInfo.role}`);
+    
+    client.to(roomName).emit('whiteboardUpdate', updatePayload);
 
     this.logger.log(`📤 Broadcasted whiteboard update to session:${sessionId}`);
 
