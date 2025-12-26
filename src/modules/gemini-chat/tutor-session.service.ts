@@ -1064,6 +1064,108 @@ Respond in JSON format:
     return { fixed, total: busyTutors.length };
   }
 
+  // ============ Daily.co Meeting Data Management ============
+
+  /**
+   * Save Daily.co meeting data (chat messages, recording, participants) when meeting ends
+   */
+  async saveDailyMeetingData(
+    sessionId: string,
+    meetingData: {
+      roomUrl?: string;
+      chatMessages?: any[];
+      recordingUrl?: string;
+      duration?: number;
+      participants?: any[];
+    }
+  ): Promise<{ success: boolean }> {
+    try {
+      // Find the tutor session by ID
+      const session = await this.prisma.tutor_sessions.findUnique({
+        where: { id: sessionId },
+      });
+
+      if (!session) {
+        throw new NotFoundException('Tutor session not found');
+      }
+
+      // Update the session with meeting data
+      await this.prisma.tutor_sessions.update({
+        where: { id: sessionId },
+        data: {
+          dailyChatMessages: meetingData.chatMessages || undefined,
+          dailyRecordingUrl: meetingData.recordingUrl || undefined,
+          dailyParticipants: meetingData.participants || undefined,
+          // Update duration if provided and not already set
+          callDuration: meetingData.duration || session.callDuration,
+          // Update call end time if not already set
+          callEndedAt: session.callEndedAt || new Date(),
+        },
+      });
+
+      this.logger.log(`Daily.co meeting data saved for session ${sessionId}`);
+      return { success: true };
+    } catch (error: any) {
+      this.logger.error(`Failed to save Daily.co meeting data: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get Daily.co meeting data for a session
+   */
+  async getDailyMeetingData(
+    userId: string,
+    sessionId: string,
+  ): Promise<{
+    chatMessages: any[];
+    recordingUrl?: string;
+    participants: any[];
+    duration?: number;
+    roomUrl?: string;
+  }> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    // Find session based on user role
+    let session: any;
+    if (user.role === 'TUTOR') {
+      const tutor = await this.prisma.tutors.findUnique({
+        where: { userId },
+        select: { id: true },
+      });
+      session = await this.prisma.tutor_sessions.findFirst({
+        where: { id: sessionId, tutorId: tutor?.id },
+      });
+    } else {
+      const student = await this.prisma.students.findUnique({
+        where: { userId },
+        select: { id: true },
+      });
+      session = await this.prisma.tutor_sessions.findFirst({
+        where: { id: sessionId, studentId: student?.id },
+      });
+    }
+
+    if (!session) {
+      throw new NotFoundException('Session not found or access denied');
+    }
+
+    return {
+      chatMessages: (session.dailyChatMessages as any[]) || [],
+      recordingUrl: session.dailyRecordingUrl || undefined,
+      participants: (session.dailyParticipants as any[]) || [],
+      duration: session.callDuration || undefined,
+      roomUrl: session.dailyRoomUrl || undefined,
+    };
+  }
+
   // ============ Helper Methods ============
 
   private formatSession(session: any): any {

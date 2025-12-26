@@ -188,5 +188,35 @@ export class TutorSessionController {
   async fixTutorStatus() {
     return this.tutorSessionService.fixTutorStatusInconsistencies();
   }
+
+  // ============ Daily.co Meeting Data Endpoints ============
+
+  /**
+   * Get Daily.co meeting data for a session (chat messages, recording, etc.)
+   */
+  @Get(':sessionId/daily-meeting-data')
+  async getDailyMeetingData(
+    @CurrentUser('id') userId: string,
+    @Param('sessionId') sessionId: string,
+  ) {
+    return this.tutorSessionService.getDailyMeetingData(userId, sessionId);
+  }
+
+  /**
+   * Save Daily.co meeting data manually (for testing or frontend integration)
+   */
+  @Post(':sessionId/save-daily-data')
+  async saveDailyMeetingData(
+    @Param('sessionId') sessionId: string,
+    @Body() meetingData: {
+      roomUrl?: string;
+      chatMessages?: any[];
+      recordingUrl?: string;
+      duration?: number;
+      participants?: any[];
+    },
+  ) {
+    return this.tutorSessionService.saveDailyMeetingData(sessionId, meetingData);
+  }
 }
 

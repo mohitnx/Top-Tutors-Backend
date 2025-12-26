@@ -7,6 +7,7 @@ import { GeminiChatGateway } from './gemini-chat.gateway';
 import { TutorSessionController } from './tutor-session.controller';
 import { TutorSessionService } from './tutor-session.service';
 import { TutorSessionGateway } from './tutor-session.gateway';
+import { WebhooksController } from './webhooks.controller';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { AuthModule } from '../auth/auth.module';
 import { MessagesModule } from '../messages/messages.module';
@@ -23,7 +24,7 @@ import { MessagesModule } from '../messages/messages.module';
       },
     }),
   ],
-  controllers: [GeminiChatController, TutorSessionController],
+  controllers: [GeminiChatController, TutorSessionController, WebhooksController],
   providers: [
     GeminiChatService,
     GeminiChatGateway,

@@ -557,6 +557,11 @@ model tutor_sessions {
   callStartedAt       DateTime?
   callEndedAt         DateTime?
   callDuration        Int?                // Duration in seconds
+
+  // Daily.co meeting data (saved when meeting ends)
+  dailyChatMessages   Json?               // Array of chat messages from Daily.co
+  dailyRecordingUrl   String?             // URL to meeting recording
+  dailyParticipants   Json?               // Array of meeting participants
   
   // Excalidraw whiteboard
   whiteboardEnabled   Boolean             @default(false)
