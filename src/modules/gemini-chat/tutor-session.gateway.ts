@@ -7,19 +7,21 @@ import {
   ConnectedSocket,
   MessageBody,
 } from '@nestjs/websockets';
-import { Logger, UseGuards, Inject, forwardRef } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
+import { Logger, Inject, forwardRef } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
-import { GeminiChatGateway } from './gemini-chat.gateway';
 import { v4 as uuidv4 } from 'uuid';
+
+// Forward reference to avoid circular dependency
+import { GeminiChatGateway } from './gemini-chat.gateway';
 
 interface ConnectedClient {
   socketId: string;
   userId: string;
   role: 'student' | 'tutor';
   sessionId?: string;
-  aiSessionId?: string;
 }
 
 @WebSocketGateway({
@@ -28,23 +30,25 @@ interface ConnectedClient {
     origin: '*',
     credentials: true,
   },
+  transports: ['websocket', 'polling'],
 })
-export class TutorSessionGateway
-  implements OnGatewayConnection, OnGatewayDisconnect
-{
+export class TutorSessionGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
 
   private readonly logger = new Logger(TutorSessionGateway.name);
   private connectedClients: Map<string, ConnectedClient> = new Map();
-  private sessionRooms: Map<string, Set<string>> = new Map(); // sessionId -> socketIds
+  private sessionRooms: Map<string, Set<string>> = new Map();
 
   constructor(
     private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
     @Inject(forwardRef(() => GeminiChatGateway))
     private readonly geminiChatGateway: GeminiChatGateway,
   ) {}
+
+  // ============ Connection Handling ============
 
   async handleConnection(client: Socket) {
     try {
@@ -53,21 +57,24 @@ export class TutorSessionGateway
         client.handshake.headers?.authorization?.replace('Bearer ', '');
 
       if (!token) {
-        this.logger.warn(`Client ${client.id} connected without token`);
-        client.emit('error', { message: 'Authentication required' });
+        this.logger.warn(`Socket ${client.id} rejected: No token`);
+        client.emit('error', { message: 'No authentication token provided' });
         client.disconnect();
         return;
       }
 
-      const decoded = this.jwtService.verify(token);
-      const userId = decoded.sub;
+      const payload = await this.jwtService.verifyAsync(token, {
+        secret: this.configService.get<string>('JWT_SECRET'),
+      });
 
-      // Determine role
+      const userId = payload.sub;
+
+      // Check if user is a tutor or student
       const tutor = await this.prisma.tutors.findUnique({
         where: { userId },
       });
 
-      const role = tutor ? 'tutor' : 'student';
+      const role: 'tutor' | 'student' = tutor ? 'tutor' : 'student';
 
       this.connectedClients.set(client.id, {
         socketId: client.id,
@@ -75,13 +82,16 @@ export class TutorSessionGateway
         role,
       });
 
-      this.logger.log(`${role} connected: ${userId} (${client.id})`);
+      this.logger.log(`✅ ${role} connected: ${userId} (${client.id})`);
 
       // If tutor, join tutor notification room
       if (role === 'tutor' && tutor) {
         client.join(`tutor:${tutor.id}`);
         client.join('tutors'); // Global tutor room for broadcasts
       }
+
+      // Join user-specific room for targeted messages
+      client.join(`user:${userId}`);
 
       client.emit('connected', { userId, role });
     } catch (error: any) {
@@ -95,10 +105,10 @@ export class TutorSessionGateway
     const clientInfo = this.connectedClients.get(client.id);
     if (clientInfo) {
       this.logger.log(
-        `${clientInfo.role} disconnected: ${clientInfo.userId} (${client.id})`,
+        `❌ ${clientInfo.role} disconnected: ${clientInfo.userId} (${client.id})`,
       );
 
-      // Remove from session rooms
+      // Remove from session rooms and notify others
       if (clientInfo.sessionId) {
         this.leaveSessionRoom(client.id, clientInfo.sessionId);
       }
@@ -115,29 +125,50 @@ export class TutorSessionGateway
     @MessageBody() data: { sessionId: string },
   ) {
     const clientInfo = this.connectedClients.get(client.id);
-    if (!clientInfo) return;
+    if (!clientInfo) {
+      this.logger.warn(`joinSession called but no clientInfo for ${client.id}`);
+      return { success: false, error: 'Not authenticated' };
+    }
 
-    const roomName = `session:${data.sessionId}`;
+    const { sessionId } = data;
+    const roomName = `session:${sessionId}`;
+
+    // Join the socket.io room
     client.join(roomName);
 
-    if (!this.sessionRooms.has(data.sessionId)) {
-      this.sessionRooms.set(data.sessionId, new Set());
+    // Track in our session rooms map
+    if (!this.sessionRooms.has(sessionId)) {
+      this.sessionRooms.set(sessionId, new Set());
     }
-    this.sessionRooms.get(data.sessionId)?.add(client.id);
+    this.sessionRooms.get(sessionId)?.add(client.id);
 
-    clientInfo.sessionId = data.sessionId;
+    // Update client info with session
+    clientInfo.sessionId = sessionId;
 
     this.logger.log(
-      `${clientInfo.role} ${clientInfo.userId} joined session ${data.sessionId}`,
+      `✅ ${clientInfo.role} ${clientInfo.userId} joined session ${sessionId} (room: ${roomName})`,
     );
 
-    // Notify others in the room
+    // Notify others in the room that someone joined
     client.to(roomName).emit('participantJoined', {
+      sessionId,
       userId: clientInfo.userId,
       role: clientInfo.role,
     });
 
-    return { success: true };
+    // ⭐ CRITICAL FIX: Emit joinSession acknowledgment back to client
+    client.emit('joinSession', {
+      success: true,
+      sessionId,
+      userId: clientInfo.userId,
+      role: clientInfo.role,
+    });
+
+    // Log room members for debugging
+    const roomMembers = this.sessionRooms.get(sessionId);
+    this.logger.log(`📊 Session ${sessionId} now has ${roomMembers?.size || 0} members`);
+
+    return { success: true, sessionId };
   }
 
   @SubscribeMessage('leaveSession')
@@ -151,10 +182,8 @@ export class TutorSessionGateway
 
   private leaveSessionRoom(socketId: string, sessionId: string) {
     try {
-      // Safely check if server and sockets are available
       if (!this.server?.sockets?.sockets) {
         this.logger.warn(`Server sockets not available, cannot leave room for socket ${socketId}`);
-        // Still clean up our internal state
         this.sessionRooms.get(sessionId)?.delete(socketId);
         const clientInfo = this.connectedClients.get(socketId);
         if (clientInfo) {
@@ -171,6 +200,7 @@ export class TutorSessionGateway
         const clientInfo = this.connectedClients.get(socketId);
         if (clientInfo) {
           client.to(roomName).emit('participantLeft', {
+            sessionId,
             userId: clientInfo.userId,
             role: clientInfo.role,
           });
@@ -181,131 +211,8 @@ export class TutorSessionGateway
       this.sessionRooms.get(sessionId)?.delete(socketId);
     } catch (error: any) {
       this.logger.error(`Error in leaveSessionRoom: ${error.message}`);
-      // Still clean up our internal state even if Socket.IO operations fail
       this.sessionRooms.get(sessionId)?.delete(socketId);
-      const clientInfo = this.connectedClients.get(socketId);
-      if (clientInfo) {
-        clientInfo.sessionId = undefined;
-      }
     }
-  }
-
-  // ============ Student Subscribes to AI Session Updates ============
-
-  @SubscribeMessage('subscribeToAISession')
-  handleSubscribeToAISession(
-    @ConnectedSocket() client: Socket,
-    @MessageBody() data: { aiSessionId: string },
-  ) {
-    const clientInfo = this.connectedClients.get(client.id);
-    if (!clientInfo) return;
-
-    client.join(`ai:${data.aiSessionId}`);
-    clientInfo.aiSessionId = data.aiSessionId;
-
-    this.logger.log(
-      `Client subscribed to AI session: ${data.aiSessionId}`,
-    );
-
-    return { success: true };
-  }
-
-  // ============ Live Chat Updates ============
-
-  /**
-   * Called when a new AI message is added to a session
-   * This notifies connected tutors if live sharing is enabled
-   */
-  async notifyNewAIMessage(
-    aiSessionId: string,
-    message: {
-      id: string;
-      role: string;
-      content: string;
-      createdAt: Date;
-    },
-  ) {
-    // Get the tutor session
-    const tutorSession = await this.prisma.tutor_sessions.findFirst({
-      where: {
-        aiSessionId,
-        status: { in: ['ACCEPTED', 'ACTIVE'] },
-        liveSharingConsent: true,
-      },
-    });
-
-    if (!tutorSession) return;
-
-    // Emit to the session room (tutors watching this session)
-    this.server
-      .to(`session:${tutorSession.id}`)
-      .emit('newAIMessage', message);
-
-    this.logger.log(`Notified session ${tutorSession.id} of new AI message`);
-  }
-
-  // ============ Session Events ============
-
-  /**
-   * Notify when tutor accepts the session
-   */
-  async notifyTutorAccepted(
-    aiSessionId: string,
-    tutorInfo: { name: string; avatar?: string },
-    tutorSessionId: string,
-    dailyRoomUrl?: string,
-  ) {
-    const eventData = {
-      tutorSessionId,
-      tutor: tutorInfo,
-      dailyRoomUrl,
-    };
-
-    this.logger.log(`🎯 Emitting tutorAccepted to ai:${aiSessionId}`, eventData);
-
-    try {
-      // Use GeminiChatGateway to emit to the correct namespace
-      if (this.geminiChatGateway) {
-        this.geminiChatGateway.server.to(`ai:${aiSessionId}`).emit('tutorAccepted', eventData);
-        this.logger.log(`✅ Successfully emitted tutorAccepted via GeminiChatGateway`);
-      } else {
-        this.logger.error(`❌ GeminiChatGateway not available for emitting tutorAccepted`);
-      }
-    } catch (error) {
-      this.logger.error(`❌ Error emitting tutorAccepted:`, error);
-    }
-  }
-
-  /**
-   * Notify when consent status changes
-   */
-  async notifyConsentChanged(
-    tutorSessionId: string,
-    enabled: boolean,
-  ) {
-    this.server.to(`session:${tutorSessionId}`).emit('consentChanged', {
-      liveSharingEnabled: enabled,
-    });
-  }
-
-  /**
-   * Notify when session status changes
-   */
-  async notifySessionStatusChanged(
-    tutorSessionId: string,
-    aiSessionId: string,
-    status: string,
-  ) {
-    // Notify tutor session room
-    this.server.to(`session:${tutorSessionId}`).emit('sessionStatusChanged', {
-      status,
-    });
-
-    // Notify student AI session room
-    this.server.to(`ai:${aiSessionId}`).emit('sessionStatusChanged', {
-      tutorSessionId,
-      status,
-    });
   }
 
   // ============ Whiteboard Collaboration ============
@@ -316,27 +223,67 @@ export class TutorSessionGateway
     @MessageBody() data: { sessionId: string; elements: any[]; appState?: any },
   ) {
     const clientInfo = this.connectedClients.get(client.id);
-    if (!clientInfo || clientInfo.sessionId !== data.sessionId) return;
+    
+    // ⭐ FIX: More lenient validation - allow if client is authenticated
+    if (!clientInfo) {
+      this.logger.warn(`whiteboardUpdate: No client info for ${client.id}`);
+      return { success: false, error: 'Not authenticated' };
+    }
 
+    const { sessionId, elements, appState } = data;
+
+    // ⭐ FIX: Auto-join session if not already joined
+    if (clientInfo.sessionId !== sessionId) {
+      this.logger.log(`whiteboardUpdate: Client ${client.id} not in session ${sessionId}, auto-joining...`);
+      const roomName = `session:${sessionId}`;
+      client.join(roomName);
+      clientInfo.sessionId = sessionId;
+      
+      if (!this.sessionRooms.has(sessionId)) {
+        this.sessionRooms.set(sessionId, new Set());
+      }
+      this.sessionRooms.get(sessionId)?.add(client.id);
+    }
+
+    this.logger.log(`🎨 Whiteboard update from ${clientInfo.role} ${clientInfo.userId} in session ${sessionId} - ${elements.length} elements`);
+
+    // Save to database (async, don't block)
+    this.saveWhiteboardData(sessionId, elements, appState).catch(err => {
+      this.logger.error(`Failed to save whiteboard: ${err.message}`);
+    });
+
+    // ⭐ CRITICAL FIX: Include sessionId in the broadcast payload
+    const updatePayload = {
+      sessionId, // ⭐ This was missing!
+      elements,
+      appState,
+      senderId: clientInfo.userId,
+      senderRole: clientInfo.role,
+      timestamp: Date.now(),
+    };
+
+    // Broadcast to others in the session (excluding sender)
+    client.to(`session:${sessionId}`).emit('whiteboardUpdate', updatePayload);
+
+    this.logger.log(`📤 Broadcasted whiteboard update to session:${sessionId}`);
+
+    return { success: true };
+  }
+
+  private async saveWhiteboardData(sessionId: string, elements: any[], appState?: any) {
     try {
-      // Save whiteboard data to database
       await this.prisma.tutor_sessions.update({
-        where: { id: data.sessionId },
+        where: { id: sessionId },
         data: {
-          whiteboardData: { elements: data.elements, appState: data.appState },
+          whiteboardData: { elements, appState: appState || {} },
           whiteboardEnabled: true,
         },
       });
+      this.logger.log(`💾 Saved whiteboard data for session ${sessionId}`);
     } catch (error: any) {
       this.logger.error(`Failed to save whiteboard data: ${error.message}`);
+      throw error;
     }
-
-    // Broadcast to others in the session
-    client.to(`session:${data.sessionId}`).emit('whiteboardUpdate', {
-      elements: data.elements,
-      appState: data.appState,
-      senderId: clientInfo.userId,
-    });
   }
 
   @SubscribeMessage('whiteboardCursor')
@@ -345,10 +292,13 @@ export class TutorSessionGateway
     @MessageBody() data: { sessionId: string; x: number; y: number },
   ) {
     const clientInfo = this.connectedClients.get(client.id);
-    if (!clientInfo || clientInfo.sessionId !== data.sessionId) return;
+    if (!clientInfo) return;
 
+    // ⭐ FIX: Include sessionId in cursor broadcast
     client.to(`session:${data.sessionId}`).emit('whiteboardCursor', {
+      sessionId: data.sessionId,
       userId: clientInfo.userId,
+      role: clientInfo.role,
       x: data.x,
       y: data.y,
     });
@@ -360,21 +310,75 @@ export class TutorSessionGateway
     @MessageBody() data: { sessionId: string },
   ) {
     const clientInfo = this.connectedClients.get(client.id);
-    if (!clientInfo || clientInfo.sessionId !== data.sessionId) return;
+    
+    if (!clientInfo) {
+      this.logger.warn(`getWhiteboardData: No client info for ${client.id}`);
+      client.emit('whiteboardData', {
+        sessionId: data.sessionId,
+        whiteboardData: { elements: [], appState: {} },
+        whiteboardEnabled: false,
+        error: 'Not authenticated',
+      });
+      return;
+    }
+
+    const { sessionId } = data;
+
+    this.logger.log(`📋 Getting whiteboard data for session ${sessionId} requested by ${clientInfo.userId}`);
 
     try {
       const session = await this.prisma.tutor_sessions.findUnique({
-        where: { id: data.sessionId },
-        select: { whiteboardData: true, whiteboardEnabled: true },
+        where: { id: sessionId },
+        select: { 
+          whiteboardData: true, 
+          whiteboardEnabled: true,
+          id: true,
+        },
       });
 
-      return {
-        whiteboardData: session?.whiteboardData || { elements: [], appState: {} },
-        whiteboardEnabled: session?.whiteboardEnabled || false,
+      if (!session) {
+        this.logger.warn(`Session ${sessionId} not found`);
+        client.emit('whiteboardData', {
+          sessionId,
+          whiteboardData: { elements: [], appState: {} },
+          whiteboardEnabled: false,
+          error: 'Session not found',
+        });
+        return;
+      }
+
+      const whiteboardData = (session.whiteboardData as any) || { elements: [], appState: {} };
+
+      // ⭐ CRITICAL FIX: Emit event instead of just returning
+      // The frontend listens for 'whiteboardData' event
+      const responsePayload = {
+        sessionId,
+        whiteboardData,
+        whiteboardEnabled: session.whiteboardEnabled || false,
       };
+
+      this.logger.log(`📤 Emitting whiteboardData for session ${sessionId}: ${whiteboardData.elements?.length || 0} elements`);
+
+      // Emit to the requesting client
+      client.emit('whiteboardData', responsePayload);
+
+      // Also return for request/response pattern
+      return responsePayload;
     } catch (error: any) {
       this.logger.error(`Failed to get whiteboard data: ${error.message}`);
-      return { whiteboardData: { elements: [], appState: {} }, whiteboardEnabled: false };
+      
+      client.emit('whiteboardData', {
+        sessionId,
+        whiteboardData: { elements: [], appState: {} },
+        whiteboardEnabled: false,
+        error: error.message,
+      });
+      
+      return { 
+        whiteboardData: { elements: [], appState: {} }, 
+        whiteboardEnabled: false,
+        error: error.message,
+      };
     }
   }
 
@@ -386,11 +390,21 @@ export class TutorSessionGateway
     @MessageBody() data: { sessionId: string; content: string },
   ) {
     const clientInfo = this.connectedClients.get(client.id);
-    if (!clientInfo || clientInfo.sessionId !== data.sessionId) return;
+    if (!clientInfo) {
+      return { error: 'Not authenticated' };
+    }
+
+    const { sessionId, content } = data;
+
+    // Auto-join if not in session
+    if (clientInfo.sessionId !== sessionId) {
+      client.join(`session:${sessionId}`);
+      clientInfo.sessionId = sessionId;
+    }
 
     // Get tutor session to find the conversation
     const tutorSession = await this.prisma.tutor_sessions.findUnique({
-      where: { id: data.sessionId },
+      where: { id: sessionId },
       select: { ai_chat_sessions: { select: { linkedConversationId: true } } },
     });
 
@@ -400,7 +414,6 @@ export class TutorSessionGateway
 
     const conversationId = tutorSession.ai_chat_sessions.linkedConversationId;
 
-    // Create message in database using the MessagesService
     try {
       // Get user info
       const user = await this.prisma.user.findUnique({
@@ -424,14 +437,14 @@ export class TutorSessionGateway
         profileId = student!.id;
       }
 
-      // Create message in conversations table
+      // Create message in database
       const message = await this.prisma.messages.create({
         data: {
           id: uuidv4(),
           conversationId,
           senderId: profileId,
           senderType: clientInfo.role === 'tutor' ? 'TUTOR' : 'STUDENT',
-          content: data.content,
+          content: content,
           messageType: 'TEXT',
         },
       });
@@ -446,13 +459,11 @@ export class TutorSessionGateway
         messageType: message.messageType,
         createdAt: message.createdAt,
         isRead: message.isRead,
+        role: clientInfo.role,
       };
 
       // Broadcast to session room (including sender)
-      this.server.to(`session:${data.sessionId}`).emit('chatMessage', messagePayload);
-
-      // Also broadcast to conversation room for legacy support
-      this.server.to(`conversation:${conversationId}`).emit('newMessage', messagePayload);
+      this.server.to(`session:${sessionId}`).emit('chatMessage', messagePayload);
 
       return { success: true, message: messagePayload };
     } catch (error: any) {
@@ -469,76 +480,44 @@ export class TutorSessionGateway
     @MessageBody() data: { sessionId: string },
   ) {
     const clientInfo = this.connectedClients.get(client.id);
-    if (!clientInfo || clientInfo.sessionId !== data.sessionId) return;
+    if (!clientInfo) {
+      client.emit('chatHistory', { sessionId: data.sessionId, messages: [], error: 'Not authenticated' });
+      return;
+    }
+
+    const { sessionId } = data;
 
     try {
-      // Get tutor session to find the conversation
       const tutorSession = await this.prisma.tutor_sessions.findUnique({
-        where: { id: data.sessionId },
+        where: { id: sessionId },
         select: { ai_chat_sessions: { select: { linkedConversationId: true } } },
       });
 
       if (!tutorSession?.ai_chat_sessions?.linkedConversationId) {
-        return { messages: [] };
+        client.emit('chatHistory', { sessionId, messages: [] });
+        return { sessionId, messages: [] };
       }
 
-      const conversationId = tutorSession.ai_chat_sessions.linkedConversationId;
-
-      // Get messages from conversation
       const messages = await this.prisma.messages.findMany({
-        where: { conversationId },
-        include: {
-          // We can't easily join users here, so we'll get user info separately
-        },
+        where: { conversationId: tutorSession.ai_chat_sessions.linkedConversationId },
         orderBy: { createdAt: 'asc' },
+        take: 100,
       });
 
-      // Get user info for each message sender
-      const userIds = [...new Set(messages.map(m => m.senderId))];
-      const users = await this.prisma.user.findMany({
-        where: { id: { in: userIds } },
-        select: { id: true, name: true, avatar: true },
-      });
-
-      const userMap = new Map(users.map(u => [u.id, u]));
-
-      const formattedMessages = messages.map(message => ({
-        id: message.id,
-        senderId: message.senderId,
-        senderName: userMap.get(message.senderId)?.name || 'User',
-        senderAvatar: userMap.get(message.senderId)?.avatar,
-        senderType: message.senderType,
-        content: message.content,
-        messageType: message.messageType,
-        createdAt: message.createdAt,
-        isRead: message.isRead,
-      }));
-
-      return { messages: formattedMessages };
+      const response = { sessionId, messages };
+      
+      // ⭐ FIX: Emit event for frontend listener
+      client.emit('chatHistory', response);
+      
+      return response;
     } catch (error: any) {
       this.logger.error(`Failed to get chat history: ${error.message}`);
-      return { messages: [] };
+      client.emit('chatHistory', { sessionId, messages: [], error: error.message });
+      return { sessionId, messages: [] };
     }
   }
 
-  // ============ Call Signaling ============
-
-  @SubscribeMessage('callSignal')
-  handleCallSignal(
-    @ConnectedSocket() client: Socket,
-    @MessageBody()
-    data: { sessionId: string; signal: 'mute' | 'unmute' | 'videoOn' | 'videoOff' | 'screenShare' | 'stopScreenShare' },
-  ) {
-    const clientInfo = this.connectedClients.get(client.id);
-    if (!clientInfo || clientInfo.sessionId !== data.sessionId) return;
-
-    client.to(`session:${data.sessionId}`).emit('callSignal', {
-      userId: clientInfo.userId,
-      signal: data.signal,
-    });
-  }
-
-  // ============ Typing Indicators ============
+  // ============ Typing Indicator ============
 
   @SubscribeMessage('typing')
   handleTyping(
@@ -546,16 +525,116 @@ export class TutorSessionGateway
     @MessageBody() data: { sessionId: string; isTyping: boolean },
   ) {
     const clientInfo = this.connectedClients.get(client.id);
-    if (!clientInfo || clientInfo.sessionId !== data.sessionId) return;
+    if (!clientInfo) return;
 
     client.to(`session:${data.sessionId}`).emit('userTyping', {
+      sessionId: data.sessionId,
       userId: clientInfo.userId,
       role: clientInfo.role,
       isTyping: data.isTyping,
     });
   }
 
-  // ============ Broadcasting Helpers ============
+  // ============ Call Signaling ============
+
+  @SubscribeMessage('callSignal')
+  handleCallSignal(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { sessionId: string; signal: string },
+  ) {
+    const clientInfo = this.connectedClients.get(client.id);
+    if (!clientInfo) return;
+
+    client.to(`session:${data.sessionId}`).emit('callSignal', {
+      sessionId: data.sessionId,
+      userId: clientInfo.userId,
+      role: clientInfo.role,
+      signal: data.signal,
+    });
+  }
+
+  // ============ Notification Helpers ============
+
+  /**
+   * Notify student when tutor accepts their help request
+   * Emits to multiple rooms for reliability
+   */
+  async notifyTutorAccepted(
+    aiSessionId: string,
+    tutorInfo: { id?: string; name: string; avatar?: string },
+    tutorSessionId: string,
+    dailyRoomUrl?: string,
+    studentUserId?: string, // ⭐ Optional: direct user notification
+  ) {
+    const eventData = {
+      tutorSessionId,
+      tutor: tutorInfo,
+      dailyRoomUrl,
+    };
+
+    this.logger.log(`🎯 Emitting tutorAccepted for session ${tutorSessionId}`, eventData);
+
+    try {
+      // ⭐ Method 1: Emit via GeminiChatGateway to AI session room
+      if (this.geminiChatGateway) {
+        this.geminiChatGateway.server.to(`ai:${aiSessionId}`).emit('tutorAccepted', eventData);
+        this.logger.log(`✅ Emitted tutorAccepted to ai:${aiSessionId}`);
+      }
+
+      // ⭐ Method 2: Emit directly to student's user room (CRITICAL)
+      if (studentUserId) {
+        // Emit on tutor-session namespace
+        this.server.to(`user:${studentUserId}`).emit('tutorAccepted', eventData);
+        this.logger.log(`✅ Emitted tutorAccepted to user:${studentUserId} (tutor-session)`);
+        
+        // Also emit via gemini-chat namespace
+        if (this.geminiChatGateway) {
+          this.geminiChatGateway.server.to(`user:${studentUserId}`).emit('tutorAccepted', eventData);
+          this.logger.log(`✅ Emitted tutorAccepted to user:${studentUserId} (gemini-chat)`);
+        }
+      }
+
+      // ⭐ Method 3: Emit to the tutor session room
+      this.server.to(`session:${tutorSessionId}`).emit('tutorAccepted', eventData);
+      this.logger.log(`✅ Emitted tutorAccepted to session:${tutorSessionId}`);
+
+    } catch (error) {
+      this.logger.error(`❌ Error emitting tutorAccepted:`, error);
+    }
+  }
+
+  /**
+   * Notify when consent status changes
+   */
+  async notifyConsentChanged(tutorSessionId: string, enabled: boolean) {
+    this.server.to(`session:${tutorSessionId}`).emit('consentChanged', {
+      sessionId: tutorSessionId,
+      liveSharingEnabled: enabled,
+    });
+  }
+
+  /**
+   * Notify when session status changes
+   */
+  async notifySessionStatusChanged(
+    tutorSessionId: string,
+    aiSessionId: string,
+    status: string,
+  ) {
+    // Notify tutor session room
+    this.server.to(`session:${tutorSessionId}`).emit('sessionStatusChanged', {
+      sessionId: tutorSessionId,
+      status,
+    });
+
+    // Notify student AI session room
+    this.server.to(`ai:${aiSessionId}`).emit('sessionStatusChanged', {
+      tutorSessionId,
+      status,
+    });
+  }
+
+  // ============ Tutor Notification Helpers ============
 
   /**
    * Notify all tutors about a new help request
@@ -570,13 +649,19 @@ export class TutorSessionGateway
       studentName: string;
     },
   ) {
+    this.logger.log(`📢 Notifying ${tutorIds.length} tutors of new help request`);
+    
     for (const tutorId of tutorIds) {
+      // Emit to tutor-specific room
       this.server.to(`tutor:${tutorId}`).emit('newHelpRequest', request);
+      // Also emit to user room as fallback
+      this.server.to(`user:${tutorId}`).emit('newHelpRequest', request);
     }
 
-    this.logger.log(
-      `Notified ${tutorIds.length} tutors of new help request`,
-    );
+    // Also broadcast to all tutors room
+    this.server.to('tutors').emit('newHelpRequest', request);
+
+    this.logger.log(`✅ Notified ${tutorIds.length} tutors of new help request for session ${request.tutorSessionId}`);
   }
 
   /**
@@ -585,5 +670,25 @@ export class TutorSessionGateway
   getSessionParticipants(sessionId: string): number {
     return this.sessionRooms.get(sessionId)?.size || 0;
   }
-}
 
+  // ============ Debug Helpers ============
+
+  @SubscribeMessage('debug')
+  async handleDebug(@ConnectedSocket() client: Socket) {
+    const clientInfo = this.connectedClients.get(client.id);
+    const rooms = Array.from(client.rooms);
+    
+    const sessionMembers: Record<string, number> = {};
+    for (const [sessionId, members] of this.sessionRooms.entries()) {
+      sessionMembers[sessionId] = members.size;
+    }
+
+    return {
+      socketId: client.id,
+      clientInfo,
+      rooms,
+      totalConnectedClients: this.connectedClients.size,
+      sessionRooms: sessionMembers,
+    };
+  }
+}

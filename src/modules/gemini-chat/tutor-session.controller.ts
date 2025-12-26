@@ -83,11 +83,19 @@ export class TutorSessionController {
     // Access the GeminiChatGateway through the service
     const tutorSessionGateway = this.tutorSessionService['tutorSessionGateway'];
     if (tutorSessionGateway) {
+      // Get the AI session to find the student userId
+      const prisma = this.tutorSessionService['prisma'];
+      const aiSession = await prisma.ai_chat_sessions.findUnique({
+        where: { id: aiSessionId },
+        select: { userId: true },
+      });
+
       await tutorSessionGateway.notifyTutorAccepted(
         aiSessionId,
-        { name: 'Test Tutor', avatar: undefined },
-        'test-session-id',
-        'https://test.daily.co/room',
+        { id: 'test-tutor-id', name: 'Test Tutor', avatar: undefined },
+        'test-session-' + Date.now(),
+        undefined,
+        aiSession?.userId, // ⭐ Pass student userId
       );
       return { success: true, message: 'Test notification sent' };
     }

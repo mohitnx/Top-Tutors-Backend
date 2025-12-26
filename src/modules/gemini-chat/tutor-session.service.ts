@@ -362,14 +362,22 @@ Respond in JSON format:
         select: { name: true, avatar: true },
       });
 
+      // Get student userId from the AI session
+      const aiSession = await this.prisma.ai_chat_sessions.findUnique({
+        where: { id: session.aiSessionId },
+        select: { userId: true },
+      });
+
       await this.tutorSessionGateway.notifyTutorAccepted(
         session.aiSessionId,
         {
+          id: tutor.id, // Include tutor ID
           name: tutorUser?.name || tutor.bio || 'Tutor',
           avatar: tutorUser?.avatar || undefined,
         },
         tutorSessionId,
         dailyRoom?.url,
+        aiSession?.userId, // ⭐ NEW: Pass student userId for direct notification
       );
       this.logger.log(`Emitted tutorAccepted to ai:${session.aiSessionId}`);
 
