@@ -2,7 +2,7 @@ import { Controller, Post, Body, HttpCode, HttpStatus, UseGuards, Get, Req, Res 
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
-import { LoginDto, RegisterStudentDto } from './dto';
+import { LoginDto, RegisterBaseDto, RegisterUserDto } from './dto';
 import { AuthResponseDto, RefreshTokenDto } from './dto/auth-response.dto';
 import { Public } from './decorators/public.decorator';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
@@ -28,7 +28,7 @@ export class AuthController {
     type: AuthResponseDto,
   })
   @ApiResponse({ status: 409, description: 'User already exists' })
-  async registerStudent(@Body() registerDto: RegisterStudentDto): Promise<AuthResponseDto> {
+  async registerStudent(@Body() registerDto: RegisterUserDto): Promise<AuthResponseDto> {
     return this.authService.register(registerDto);
   }
 
@@ -43,7 +43,7 @@ export class AuthController {
     type: AuthResponseDto,
   })
   @ApiResponse({ status: 409, description: 'User already exists' })
-  async register(@Body() registerDto: RegisterStudentDto): Promise<AuthResponseDto> {
+  async register(@Body() registerDto: RegisterUserDto): Promise<AuthResponseDto> {
     return this.authService.register(registerDto);
   }
 

@@ -4,3 +4,4 @@ ADD COLUMN     "dailyRecordingUrl" TEXT,
 ADD COLUMN     "dailyParticipants" JSONB;
 
 
+

@@ -8,17 +8,17 @@ import {
   Matches,
 } from 'class-validator';
 
-export class RegisterStudentDto {
+export class RegisterBaseDto {
   @ApiProperty({
     example: 'john@example.com',
-    description: 'Student email address',
+    description: 'User email address',
   })
   @IsEmail({}, { message: 'Please provide a valid email address' })
   email: string;
 
   @ApiProperty({
     example: 'John Doe',
-    description: 'Student full name',
+    description: 'User full name',
   })
   @IsString()
   @MinLength(2)
@@ -36,33 +36,6 @@ export class RegisterStudentDto {
     message: 'Password must contain uppercase, lowercase, and number/special character',
   })
   password: string;
-
-  @ApiPropertyOptional({
-    example: 'Grade 10',
-    description: 'Student grade/class',
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(50)
-  grade?: string;
-
-  @ApiPropertyOptional({
-    example: 'Springfield High School',
-    description: 'School name',
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(200)
-  school?: string;
-
-  @ApiPropertyOptional({
-    example: '+1234567890',
-    description: 'Phone number',
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(20)
-  phoneNumber?: string;
 }
 
 

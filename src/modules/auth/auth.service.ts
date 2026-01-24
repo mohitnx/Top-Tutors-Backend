@@ -3,7 +3,8 @@ import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../prisma/prisma.service';
 import * as bcrypt from 'bcrypt';
 import { LoginDto } from './dto/login.dto';
-import { RegisterStudentDto } from './dto/register.dto';
+import { RegisterBaseDto, RegisterUserDto } from './dto';
+import { Role } from '@prisma/client';
 import { AuthResponseDto, TokensDto } from './dto/auth-response.dto';
 import { JwtPayload } from './strategies/jwt.strategy';
 import { GoogleUser } from './strategies/google.strategy';
@@ -16,7 +17,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
   ) {}
 
-  async register(registerDto: RegisterStudentDto): Promise<AuthResponseDto> {
+  async register(registerDto: RegisterUserDto): Promise<AuthResponseDto> {
     // Check if user already exists
     const existingUser = await this.prisma.user.findUnique({
       where: { email: registerDto.email },
@@ -29,30 +30,41 @@ export class AuthService {
     // Hash password
     const hashedPassword = await bcrypt.hash(registerDto.password, 10);
 
-    // Create user with student profile in a transaction
+    // Determine the role, default to STUDENT if not provided
+    const userRole = registerDto.role || Role.STUDENT;
+
+    // Create user and profile in a transaction
     const result = await this.prisma.$transaction(async (tx) => {
-      // Create user
       const user = await tx.user.create({
         data: {
           email: registerDto.email,
           name: registerDto.name,
           password: hashedPassword,
-          role: 'STUDENT',
+          role: userRole,
         },
       });
 
-      // Create student profile
-      await (tx as any).students.create({
-        data: {
-          id: uuidv4(),
-          userId: user.id,
-          grade: registerDto.grade || null,
-          school: registerDto.school || null,
-          phoneNumber: registerDto.phoneNumber || null,
-          updatedAt: new Date(),
-        },
-      });
-
+      if (userRole === Role.STUDENT) {
+        await (tx as any).students.create({
+          data: {
+            id: uuidv4(),
+            userId: user.id,
+            grade: registerDto.grade || null,
+            school: registerDto.school || null,
+            phoneNumber: registerDto.phoneNumber || null,
+            updatedAt: new Date(),
+          },
+        });
+      } else if (userRole === Role.TUTOR) {
+        await (tx as any).tutors.create({
+          data: {
+            id: uuidv4(),
+            userId: user.id,
+            updatedAt: new Date(),
+            // Add other default tutor fields if necessary
+          },
+        });
+      }
       return user;
     });
 
