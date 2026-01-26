@@ -6,3 +6,4 @@ ADD COLUMN     "dailyParticipants" JSONB;
 
 
 
+
