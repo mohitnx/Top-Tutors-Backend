@@ -35,14 +35,8 @@ export class GeminiChatService {
   private workingModelName: string | null = null;
   
   // Models to try in order of preference
-  private readonly modelsToTry = [
-    'gemini-2.0-flash-exp',
-    'gemini-1.5-flash-latest',
-    'gemini-1.5-pro-latest',
-    'gemini-1.5-flash',
-    'gemini-1.5-pro',
-    'gemini-pro',
-  ];
+  private readonly modelsToTry = ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-2.5-pro', 'gemini-pro-latest']
+
   
   // Track active streams for reconnection
   private activeStreams: Map<string, { content: string; complete: boolean }> = new Map();

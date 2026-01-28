@@ -986,12 +986,9 @@ export class MessagesService {
       return this.keywordBasedClassification(text);
     }
 
-    // Models to try in order - use correct model names (Dec 2024)
-    const modelsToTry = [
-      'gemini-1.5-flash',
-      'gemini-1.5-pro',
-      'gemini-2.0-flash-exp',
-    ];
+    const modelsToTry = ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-2.5-pro', 'gemini-pro-latest'];
+
+    
 
     const prompt = `You are an educational assistant. Analyze this student question and classify it.
 
