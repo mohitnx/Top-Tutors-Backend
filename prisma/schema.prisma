@@ -352,6 +352,9 @@ enum Subject {
   ECONOMICS
   ACCOUNTING
   GENERAL
+  SOCIAL
+  HUMANITIES
+  ARTS
 }
 
 enum Urgency {

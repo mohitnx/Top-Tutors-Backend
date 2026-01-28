@@ -1004,7 +1004,7 @@ Respond with ONLY a valid JSON object (no markdown, no code blocks) in this exac
 }
 
 IMPORTANT RULES:
-- subject MUST be EXACTLY one of these values: MATHEMATICS, PHYSICS, CHEMISTRY, BIOLOGY, ENGLISH, HISTORY, GEOGRAPHY, COMPUTER_SCIENCE, ECONOMICS, ACCOUNTING, GENERAL
+- subject MUST be EXACTLY one of these values: MATHEMATICS, PHYSICS, CHEMISTRY, BIOLOGY, ENGLISH, HISTORY, GEOGRAPHY, COMPUTER_SCIENCE, ECONOMICS, SOCIAL, HUMANITIES, ARTS, ACCOUNTING, GENERAL
 - For questions about computers, programming, coding, software, LLM, AI, machine learning, algorithms, data structures → use COMPUTER_SCIENCE
 - For questions about math, calculus, algebra, geometry, statistics → use MATHEMATICS
 - For questions about physics, mechanics, electricity, waves → use PHYSICS
@@ -1014,6 +1014,9 @@ IMPORTANT RULES:
 - For questions about history, wars, civilizations, historical events → use HISTORY
 - For questions about geography, maps, countries, climate → use GEOGRAPHY
 - For questions about economics, markets, trade, macroeconomics → use ECONOMICS
+- For questions about social studies, sociology, psychology, economics → use SOCIAL
+- For questions about humanities, literature, philosophy, history → use HUMANITIES
+- For questions about arts, music, painting, sculpture → use ARTS
 - For questions about accounting, finance, bookkeeping → use ACCOUNTING
 - Only use GENERAL if the question doesn't fit any other category
 - urgency MUST be one of: LOW, NORMAL, HIGH, URGENT (HIGH if student mentions exam/test/deadline, URGENT if very immediate)
@@ -1140,13 +1143,27 @@ IMPORTANT RULES:
         'fiscal', 'monetary', 'policy', 'bank', 'interest', 'loan',
         'investment', 'capital', 'asset', 'liability',
       ],
-      ACCOUNTING: [
-        'accounting', 'accountant', 'finance', 'financial',
-        'bookkeeping', 'ledger', 'journal', 'entry',
-        'balance sheet', 'income statement', 'cash flow',
-        'tax', 'taxes', 'revenue', 'expense', 'debit', 'credit',
-        'audit', 'auditor', 'budget', 'forecast',
-        'asset', 'liability', 'equity', 'depreciation',
+      SOCIAL: [
+        'social', 'social studies', 'sociology', 'psychology', 'economics',
+        'politics', 'government', 'economy', 'finance', 'business',
+        'management', 'leadership', 'teamwork', 'communication', 'interpersonal',
+        'social media', 'social network', 'social media platform', 'social media site',
+        'social media app', 'social media website', 'social media service', 'social media tool',
+      ],
+      HUMANITIES: [
+        'humanities', 'humanity', 'literature', 'philosophy', 'history',
+        'art', 'music', 'painting', 'sculpture', 'architecture',
+        'literature', 'poem', 'poetry', 'novel', 'story', 'fiction',
+        'vocabulary', 'word', 'sentence', 'paragraph', 'punctuation',
+        'reading', 'comprehension', 'spelling', 'pronunciation',
+        'verb', 'noun', 'adjective', 'adverb', 'preposition',
+      ],
+      ARTS: [
+        'arts', 'art', 'music', 'painting', 'sculpture', 'architecture',
+        'literature', 'poem', 'poetry', 'novel', 'story', 'fiction',
+        'vocabulary', 'word', 'sentence', 'paragraph', 'punctuation',
+        'reading', 'comprehension', 'spelling', 'pronunciation',
+        'verb', 'noun', 'adjective', 'adverb', 'preposition',
       ],
     };
 

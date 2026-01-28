@@ -1105,7 +1105,7 @@ export class GeminiChatService {
 
     const validSubjects = [
       'MATHEMATICS', 'PHYSICS', 'CHEMISTRY', 'BIOLOGY', 'ENGLISH',
-      'HISTORY', 'GEOGRAPHY', 'COMPUTER_SCIENCE', 'ECONOMICS', 'ACCOUNTING', 'GENERAL',
+      'HISTORY', 'GEOGRAPHY', 'COMPUTER_SCIENCE', 'ECONOMICS','SOCIAL', 'HUMANITIES', 'ARTS', 'ACCOUNTING', 'GENERAL',
     ];
 
     try {

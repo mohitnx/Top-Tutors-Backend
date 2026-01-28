@@ -222,7 +222,7 @@ export class TutorSessionService {
       const prompt = `Analyze this student-AI conversation and provide:
 1. A comprehensive summary (2-3 paragraphs) explaining what the student is struggling with
 2. The main topic they need help with (concise, 5-10 words)
-3. The academic subject (one of: MATHEMATICS, PHYSICS, CHEMISTRY, BIOLOGY, ENGLISH, HISTORY, GEOGRAPHY, COMPUTER_SCIENCE, ECONOMICS, ACCOUNTING, GENERAL)
+3. The academic subject (one of: MATHEMATICS, PHYSICS, CHEMISTRY, BIOLOGY, ENGLISH, HISTORY, GEOGRAPHY, COMPUTER_SCIENCE, ECONOMICS, SOCIAL, HUMANITIES, ARTS, ACCOUNTING, GENERAL)
 4. Key keywords/concepts mentioned (up to 5)
 
 Conversation:
@@ -245,7 +245,7 @@ Respond in JSON format:
 
       const validSubjects = [
         'MATHEMATICS', 'PHYSICS', 'CHEMISTRY', 'BIOLOGY', 'ENGLISH',
-        'HISTORY', 'GEOGRAPHY', 'COMPUTER_SCIENCE', 'ECONOMICS', 'ACCOUNTING', 'GENERAL',
+        'HISTORY', 'GEOGRAPHY', 'COMPUTER_SCIENCE', 'ECONOMICS', 'SOCIAL', 'HUMANITIES', 'ARTS', 'ACCOUNTING', 'GENERAL',
       ];
 
       return {
