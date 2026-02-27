@@ -17,10 +17,16 @@ export class AuthService {
     private readonly jwtService: JwtService,
   ) {}
 
+  private normalizeEmail(email: string): string {
+    return email?.trim().toLowerCase();
+  }
+
   async register(registerDto: RegisterUserDto): Promise<AuthResponseDto> {
+    const normalizedEmail = this.normalizeEmail(registerDto.email);
+
     // Check if user already exists
     const existingUser = await this.prisma.user.findUnique({
-      where: { email: registerDto.email },
+      where: { email: normalizedEmail },
     });
 
     if (existingUser) {
@@ -37,7 +43,7 @@ export class AuthService {
     const result = await this.prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
         data: {
-          email: registerDto.email,
+          email: normalizedEmail,
           name: registerDto.name,
           password: hashedPassword,
           role: userRole,
@@ -85,9 +91,11 @@ export class AuthService {
   }
 
   async login(loginDto: LoginDto): Promise<AuthResponseDto> {
+    const normalizedEmail = this.normalizeEmail(loginDto.email);
+
     // Find user
     const user = await this.prisma.user.findUnique({
-      where: { email: loginDto.email },
+      where: { email: normalizedEmail },
     });
 
     if (!user) {
@@ -127,8 +135,10 @@ export class AuthService {
   }
 
   async validateUser(email: string, password: string): Promise<any> {
+    const normalizedEmail = this.normalizeEmail(email);
+
     const user = await this.prisma.user.findUnique({
-      where: { email },
+      where: { email: normalizedEmail },
     });
 
     if (user && user.password && (await bcrypt.compare(password, user.password))) {
