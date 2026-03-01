@@ -35,7 +35,7 @@ export class GeminiChatService {
   private workingModelName: string | null = null;
   
   // Models to try in order of preference
-  private readonly modelsToTry = ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-2.5-pro', 'gemini-pro-latest']
+  private readonly modelsToTry = ['gemini-pro-latest', 'gemini-2.5-pro','gemini-2.5-flash', 'gemini-flash-latest' ]
 
   
   // Track active streams for reconnection
