@@ -986,7 +986,7 @@ export class MessagesService {
       return this.keywordBasedClassification(text);
     }
 
-    const modelsToTry = ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-2.5-pro', 'gemini-pro-latest'];
+    const modelsToTry = ['gemini-pro-latest', 'gemini-2.5-pro','gemini-2.5-flash', 'gemini-flash-latest' ];
 
     
 
