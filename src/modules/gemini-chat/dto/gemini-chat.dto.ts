@@ -184,11 +184,13 @@ export interface MessageResponse {
 }
 
 export interface StreamChunk {
-  type: 'start' | 'chunk' | 'end' | 'error';
+  type: 'start' | 'chunk' | 'heartbeat' | 'end' | 'error';
   messageId: string;
   sessionId: string;
   content?: string;
   fullContent?: string;
+  message?: string; // status/heartbeat text for UI
+  waitingMs?: number; // used with heartbeat/timeouts
   error?: string;
   usage?: {
     promptTokens: number;

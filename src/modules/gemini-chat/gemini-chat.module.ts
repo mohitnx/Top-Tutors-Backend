@@ -11,12 +11,14 @@ import { WebhooksController } from './webhooks.controller';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { AuthModule } from '../auth/auth.module';
 import { MessagesModule } from '../messages/messages.module';
+import { AiModule } from '../ai/ai.module';
 
 @Module({
   imports: [
     ConfigModule,
     PrismaModule,
     AuthModule,
+    AiModule,
     forwardRef(() => MessagesModule), // For tutor notification integration
     MulterModule.register({
       limits: {

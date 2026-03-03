@@ -8,6 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { GoogleGenerativeAI, GenerativeModel, Content, Part } from '@google/generative-ai';
 import { PrismaService } from '../../prisma/prisma.service';
+import { SystemInstructionsService } from '../ai/system-instructions/system-instructions.service';
 import {
   CreateSessionDto,
   UpdateSessionDto,
@@ -39,11 +40,21 @@ export class GeminiChatService {
 
   
   // Track active streams for reconnection
-  private activeStreams: Map<string, { content: string; complete: boolean }> = new Map();
+  private activeStreams: Map<
+    string,
+    {
+      content: string;
+      complete: boolean;
+      startedAtMs: number;
+      lastActivityAtMs: number; // last time we received a model chunk
+      cancelled?: boolean;
+    }
+  > = new Map();
 
   constructor(
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly systemInstructions: SystemInstructionsService,
   ) {
     // Use NEW_GEMINI_KEY as specified
     const apiKey = this.configService.get<string>('NEW_GEMINI_KEY');
@@ -72,8 +83,16 @@ export class GeminiChatService {
     // Try each model until one works
     for (const modelName of this.modelsToTry) {
       try {
+        const systemPromptText = this.systemInstructions.getSystemPromptText({
+          key: 'gemini_chat_tutor',
+        });
+
         const testModel = this.genAI.getGenerativeModel({
           model: modelName,
+          systemInstruction: {
+            role: 'system',
+            parts: [{ text: systemPromptText }],
+          },
           generationConfig: {
             temperature: 0.7,
             topP: 0.95,
@@ -438,7 +457,14 @@ export class GeminiChatService {
     });
 
     // Initialize stream tracking
-    this.activeStreams.set(streamId, { content: '', complete: false });
+    const now = Date.now();
+    this.activeStreams.set(streamId, {
+      content: '',
+      complete: false,
+      startedAtMs: now,
+      lastActivityAtMs: now,
+      cancelled: false,
+    });
 
     // Start streaming in background
     this.streamResponse(
@@ -476,6 +502,15 @@ export class GeminiChatService {
     attachments: Express.Multer.File[] | undefined,
     emitter: EventEmitter,
   ): Promise<void> {
+    const heartbeatIntervalMs =
+      Number(this.configService.get<string>('GEMINI_STREAM_HEARTBEAT_MS')) || 5000;
+    const idleTimeoutMs =
+      Number(this.configService.get<string>('GEMINI_STREAM_IDLE_TIMEOUT_MS')) || 90000;
+    const totalTimeoutMs =
+      Number(this.configService.get<string>('GEMINI_STREAM_TOTAL_TIMEOUT_MS')) || 5 * 60 * 1000;
+
+    let heartbeatTimer: NodeJS.Timeout | null = null;
+
     try {
       // Get working model
       const model = await this.getWorkingModel();
@@ -489,6 +524,7 @@ export class GeminiChatService {
         type: 'start',
         messageId,
         sessionId,
+        message: 'Started generating response',
       } as StreamChunk);
 
       // Generate streaming response
@@ -497,15 +533,70 @@ export class GeminiChatService {
       });
 
       let fullContent = '';
+      const startedAtMs = Date.now();
 
-      for await (const chunk of result.stream) {
-        const chunkText = chunk.text();
+      // Heartbeat: keep UI alive even when model is slow
+      heartbeatTimer = setInterval(() => {
+        const streamData = this.activeStreams.get(streamId);
+        if (!streamData || streamData.complete || streamData.cancelled) return;
+
+        const now = Date.now();
+        const waitingMs = now - streamData.lastActivityAtMs;
+        emitter.emit('chunk', {
+          type: 'heartbeat',
+          messageId,
+          sessionId,
+          fullContent: streamData.content,
+          waitingMs,
+          message:
+            waitingMs > 30000
+              ? 'Still working… this is taking longer than usual'
+              : 'Still working…',
+        } as StreamChunk);
+      }, heartbeatIntervalMs);
+
+      // Iterate with an idle timeout so we never hang forever waiting for chunks
+      const iterator = (result.stream as any)[Symbol.asyncIterator]?.();
+      if (!iterator || typeof iterator.next !== 'function') {
+        throw new Error('Streaming iterator not available');
+      }
+
+      while (true) {
+        const elapsedMs = Date.now() - startedAtMs;
+        if (elapsedMs > totalTimeoutMs) {
+          throw new Error('Generation timed out (took too long)');
+        }
+
+        let nextResult: any;
+        try {
+          nextResult = await this.withTimeout(
+            iterator.next(),
+            idleTimeoutMs,
+            'No response from model (idle timeout)',
+          );
+        } catch (e) {
+          // Try to stop the iterator if possible
+          try {
+            if (typeof iterator.return === 'function') {
+              await iterator.return();
+            }
+          } catch {
+            // ignore
+          }
+          throw e;
+        }
+
+        if (nextResult?.done) break;
+
+        const chunk = nextResult.value;
+        const chunkText = chunk?.text ? chunk.text() : '';
         fullContent += chunkText;
 
         // Update stream tracking
         const streamData = this.activeStreams.get(streamId);
         if (streamData) {
           streamData.content = fullContent;
+          streamData.lastActivityAtMs = Date.now();
         }
 
         // Emit chunk
@@ -519,7 +610,11 @@ export class GeminiChatService {
       }
 
       // Get final response for usage stats
-      const finalResponse = await result.response;
+      const finalResponse = await this.withTimeout(
+        result.response,
+        idleTimeoutMs,
+        'No final response from model (idle timeout)',
+      );
       const usageMetadata = finalResponse.usageMetadata;
 
       // Update message in database
@@ -563,6 +658,11 @@ export class GeminiChatService {
     } catch (error: any) {
       this.logger.error(`Streaming error: ${error.message}`);
 
+      const streamData = this.activeStreams.get(streamId);
+      if (streamData) {
+        streamData.cancelled = true;
+      }
+
       // Update message with error
       await this.prisma.ai_messages.update({
         where: { id: messageId },
@@ -580,7 +680,26 @@ export class GeminiChatService {
         messageId,
         sessionId,
         error: error.message,
+        message: 'Failed to generate response',
       } as StreamChunk);
+    } finally {
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+      }
+    }
+  }
+
+  private async withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+    let timeout: NodeJS.Timeout | null = null;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error(message)), ms);
+        }),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
     }
   }
 
