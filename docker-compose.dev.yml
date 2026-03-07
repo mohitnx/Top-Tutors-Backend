@@ -1,5 +1,5 @@
 services:
-  # PostgreSQL Database for development
+  # PostgreSQL Database for local development
   db:
     image: postgres:16-alpine
     container_name: top-tutor-db-dev
@@ -13,12 +13,12 @@ services:
     ports:
       - '5432:5432'
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d top_tutor_db']
       interval: 5s
       timeout: 5s
       retries: 5
 
-  # Redis for caching (optional - for future use)
+  # Redis (for future caching / session / queue use)
   redis:
     image: redis:7-alpine
     container_name: top-tutor-redis-dev
@@ -29,7 +29,22 @@ services:
     volumes:
       - redis_data_dev:/data
 
+  # pgAdmin — database GUI (open http://localhost:5050, login: admin@toptutor.com / admin)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: top-tutor-pgadmin-dev
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@toptutor.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - '5050:80'
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles:
+      - tools
+
 volumes:
   postgres_data_dev:
   redis_data_dev:
-

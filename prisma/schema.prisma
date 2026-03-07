@@ -3,28 +3,56 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")        // Pooled URL — used by Prisma Client at runtime
+  directUrl = env("DIRECT_DATABASE_URL") // Direct URL — used by Prisma CLI (migrate, studio)
 }
 
 model User {
-  id             String           @id @default(uuid())
-  email          String           @unique
-  name           String?
-  password       String?
-  role           Role             @default(USER)
-  isActive       Boolean          @default(true)
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
-  googleId       String?          @unique
-  avatar         String?
-  authProvider   AuthProvider     @default(LOCAL)
-  refresh_tokens refresh_tokens[]
-  students       students?
-  tutors         tutors?
-  ai_chat_sessions ai_chat_sessions[]
+  id                   String           @id @default(uuid())
+  email                String           @unique
+  name                 String
+  password             String?          // null until invitation is accepted
+  role                 Role
+  isActive             Boolean          @default(false) // false until invitation accepted
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+  avatar               String?
+
+  // Invitation flow
+  invitationToken      String?          @unique
+  invitationExpiresAt  DateTime?
+
+  // Only set for ADMINISTRATOR role
+  administeredSchoolId String?          @unique
+  administeredSchool   School?          @relation("SchoolAdministrator", fields: [administeredSchoolId], references: [id])
+
+  refresh_tokens       refresh_tokens[]
+  students             students?
+  tutors               tutors?
+  teachers             teachers?
+  ai_chat_sessions     ai_chat_sessions[]
 
   @@map("users")
+}
+
+model School {
+  id            String     @id @default(uuid())
+  name          String
+  code          String     @unique  // Short unique identifier (e.g. "NHS-2024")
+  address       String?
+  city          String?
+  country       String?
+  isActive      Boolean    @default(true)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  administrator    User?           @relation("SchoolAdministrator")
+  students         students[]
+  teachers         teachers[]
+  class_sections   class_sections[]
+
+  @@map("schools")
 }
 
 model Course {
@@ -133,39 +161,45 @@ model refresh_tokens {
 model students {
   id            String          @id
   userId        String          @unique
-  
+
+  // School affiliation (null = unaffiliated, gates SAP feature on frontend)
+  schoolId      String?
+  school_rel    School?         @relation(fields: [schoolId], references: [id])
+
   // Basic Info
   grade         String?
-  school        String?
   phoneNumber   String?
   dateOfBirth   DateTime?
-  
+
   // Parent/Guardian Info
   parentName    String?
   parentEmail   String?
   parentPhone   String?
-  
+
   // Location
   address       String?
   city          String?
   state         String?
   country       String?
   timezone      String?
-  
+
   // Academic Preferences
   preferredSubjects Subject[]   @default([])
   learningGoals     String?
   academicLevel     String?     // e.g., "High School", "Undergraduate", "Graduate"
-  
+
   // Profile Completion
   profileCompleted  Boolean     @default(false)
-  
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime
-  conversations conversations[]
-  enrollments   enrollments[]
-  users         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tutor_sessions tutor_sessions[]
+
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime
+  conversations    conversations[]
+  enrollments      enrollments[]
+  users            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tutor_sessions   tutor_sessions[]
+  student_sections student_sections[]
+
+  @@index([schoolId])
 }
 
 model tutors {
@@ -302,16 +336,13 @@ enum NotificationStatus {
 }
 
 enum Role {
-  USER
-  ADMIN
-  TUTOR
-  STUDENT
+  ADMIN          // Platform super-admin
+  ADMINISTRATOR  // Per-school administrator
+  TEACHER        // School-linked, uploads class questions daily
+  TUTOR          // Platform-wide tutor
+  STUDENT        // School-affiliated or unaffiliated student
 }
 
-enum AuthProvider {
-  LOCAL
-  GOOGLE
-}
 
 enum ConversationStatus {
   PENDING
@@ -442,6 +473,7 @@ model ai_chat_sessions {
   lastMessageAt DateTime            @default(now())
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
+  mode          AIMode              @default(SINGLE)  // SINGLE or COUNCIL
   
   // Tutor request tracking
   tutorRequestStatus  TutorRequestStatus?
@@ -495,10 +527,13 @@ model ai_messages {
   // Token usage for analytics
   promptTokens    Int?
   completionTokens Int?
-  
+
+  // Council mode — stores each member's individual response before synthesis
+  councilResponses Json?            // Array of { memberId, memberName, memberEmoji, content }
+
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
-  
+
   ai_chat_sessions ai_chat_sessions @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   
   @@index([sessionId])
@@ -510,6 +545,11 @@ enum AIMessageRole {
   USER
   ASSISTANT
   SYSTEM
+}
+
+enum AIMode {
+  SINGLE   // One model responds (default)
+  COUNCIL  // Three expert perspectives + synthesis
 }
 
 enum AIFeedbackType {
@@ -598,4 +638,170 @@ enum TutorSessionStatus {
   ACTIVE        // Session in progress
   COMPLETED     // Session ended normally
   CANCELLED     // Session cancelled
+}
+
+// ============ Daily Learning Package ============
+
+model teachers {
+  id        String    @id @default(uuid())
+  userId    String    @unique
+  schoolId  String
+  subjects  Subject[] @default([])
+  bio       String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  users            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  school           School             @relation(fields: [schoolId], references: [id])
+  teacher_sections teacher_sections[]
+  daily_uploads    daily_uploads[]
+
+  @@index([schoolId])
+  @@map("teachers")
+}
+
+model class_sections {
+  id        String   @id @default(uuid())
+  schoolId  String
+  name      String
+  grade     String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  school           School             @relation(fields: [schoolId], references: [id])
+  student_sections student_sections[]
+  teacher_sections teacher_sections[]
+  daily_uploads    daily_uploads[]
+  weekly_packages  weekly_packages[]
+
+  @@index([schoolId])
+  @@map("class_sections")
+}
+
+model student_sections {
+  id        String @id @default(uuid())
+  studentId String
+  sectionId String
+
+  students       students       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  class_sections class_sections @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, sectionId])
+  @@map("student_sections")
+}
+
+model teacher_sections {
+  id        String  @id @default(uuid())
+  teacherId String
+  sectionId String
+  subject   Subject
+
+  teachers       teachers       @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  class_sections class_sections @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@unique([teacherId, sectionId, subject])
+  @@map("teacher_sections")
+}
+
+model daily_uploads {
+  id         String       @id @default(uuid())
+  teacherId  String
+  sectionId  String
+  subject    Subject
+  uploadDate DateTime     @default(now())
+  status     UploadStatus @default(PENDING)
+  errorMsg   String?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  teachers            teachers              @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  class_sections      class_sections        @relation(fields: [sectionId], references: [id])
+  upload_images       upload_images[]
+  extracted_questions extracted_questions[]
+  daily_packages      daily_packages[]
+
+  @@index([sectionId])
+  @@index([status])
+  @@map("daily_uploads")
+}
+
+model upload_images {
+  id       String @id @default(uuid())
+  uploadId String
+  imageUrl String
+  order    Int    @default(0)
+
+  daily_uploads daily_uploads @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+
+  @@index([uploadId])
+  @@map("upload_images")
+}
+
+model extracted_questions {
+  id              String            @id @default(uuid())
+  uploadId        String
+  text            String
+  frequency       Int               @default(1)
+  rankType        QuestionRankType?
+  rankPosition    Int?
+  shortAnswer     String?
+  fullAnswer      String?
+  realLifeExample String?
+
+  daily_uploads daily_uploads @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+
+  @@index([uploadId])
+  @@map("extracted_questions")
+}
+
+model daily_packages {
+  id              String    @id @default(uuid())
+  uploadId        String
+  sectionId       String
+  subject         Subject
+  packageDate     DateTime  @default(now())
+  pdfUrl          String?
+  audioUrl        String?
+  quizJson        Json?
+  summaryText     String?
+  emailSentAt     DateTime?
+  weeklyPackageId String?
+
+  daily_uploads  daily_uploads    @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+  weekly_package weekly_packages? @relation(fields: [weeklyPackageId], references: [id])
+
+  @@index([sectionId])
+  @@index([packageDate])
+  @@map("daily_packages")
+}
+
+model weekly_packages {
+  id          String    @id @default(uuid())
+  sectionId   String
+  subject     Subject
+  weekStart   DateTime
+  weekEnd     DateTime
+  pdfUrl      String?
+  emailSentAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  class_sections class_sections  @relation(fields: [sectionId], references: [id])
+  daily_packages daily_packages[]
+
+  @@index([sectionId])
+  @@index([weekStart])
+  @@map("weekly_packages")
+}
+
+enum UploadStatus {
+  PENDING
+  PROCESSING
+  COMPLETE
+  FAILED
+}
+
+enum QuestionRankType {
+  MOST_ASKED
+  BEST_ASKED
 }

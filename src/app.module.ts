@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { WinstonModule } from 'nest-winston';
+import { ScheduleModule } from '@nestjs/schedule';
 import * as winston from 'winston';
 
 // Config
@@ -17,6 +18,12 @@ import { AuthModule } from './modules/auth/auth.module';
 import { MessagesModule } from './modules/messages/messages.module';
 import { ProfilesModule } from './modules/profiles/profiles.module';
 import { GeminiChatModule } from './modules/gemini-chat/gemini-chat.module';
+import { EmailModule } from './modules/email/email.module';
+import { SchoolsModule } from './modules/schools/schools.module';
+import { StorageModule } from './modules/storage/storage.module';
+import { TeachersModule } from './modules/teachers/teachers.module';
+import { ClassSectionsModule } from './modules/class-sections/class-sections.module';
+import { DailyPackageModule } from './modules/daily-package/daily-package.module';
 
 // Common
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -77,16 +84,25 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
       ],
     }),
 
+    // Scheduler (cron jobs)
+    ScheduleModule.forRoot(),
+
     // Database
     PrismaModule,
 
     // Feature modules
+    StorageModule,
+    EmailModule,
     HealthModule,
     UsersModule,
     AuthModule,
+    SchoolsModule,
+    TeachersModule,
+    ClassSectionsModule,
     MessagesModule,
     ProfilesModule,
     GeminiChatModule,
+    DailyPackageModule,
   ],
   providers: [
     // Global exception filter

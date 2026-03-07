@@ -151,11 +151,23 @@ export class GeminiChatGateway implements OnGatewayConnection, OnGatewayDisconne
       // Forward stream chunks to this user
       result.emitter.on('chunk', (chunk: StreamChunk) => {
         this.server.to(`user:${socket.user!.id}`).emit('streamChunk', chunk);
-        
-        // Also emit to session room if others are listening
-        if (data.sessionId) {
-          socket.to(`session:${data.sessionId}`).emit('streamChunk', chunk);
-        }
+        this.server.to(`ai:${result.sessionId}`).emit('streamChunk', chunk);
+      });
+
+      // Forward council events
+      result.emitter.on('councilStatus', (data: any) => {
+        this.server.to(`user:${socket.user!.id}`).emit('councilStatus', data);
+        this.server.to(`ai:${result.sessionId}`).emit('councilStatus', data);
+      });
+
+      result.emitter.on('councilMemberComplete', (data: any) => {
+        this.server.to(`user:${socket.user!.id}`).emit('councilMemberComplete', data);
+        this.server.to(`ai:${result.sessionId}`).emit('councilMemberComplete', data);
+      });
+
+      result.emitter.on('councilSynthesisStart', (data: any) => {
+        this.server.to(`user:${socket.user!.id}`).emit('councilSynthesisStart', data);
+        this.server.to(`ai:${result.sessionId}`).emit('councilSynthesisStart', data);
       });
 
       return {

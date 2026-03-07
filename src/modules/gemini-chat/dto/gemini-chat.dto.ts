@@ -25,6 +25,11 @@ export class CreateSessionDto {
   @IsOptional()
   @IsString()
   subject?: string;
+
+  @ApiPropertyOptional({ description: 'AI mode for the session', enum: ['SINGLE', 'COUNCIL'] })
+  @IsOptional()
+  @IsEnum(['SINGLE', 'COUNCIL'])
+  mode?: 'SINGLE' | 'COUNCIL';
 }
 
 export class UpdateSessionDto {
@@ -43,6 +48,11 @@ export class UpdateSessionDto {
   @IsOptional()
   @IsBoolean()
   isArchived?: boolean;
+
+  @ApiPropertyOptional({ description: 'AI mode for the session', enum: ['SINGLE', 'COUNCIL'] })
+  @IsOptional()
+  @IsEnum(['SINGLE', 'COUNCIL'])
+  mode?: 'SINGLE' | 'COUNCIL';
 }
 
 export class GetSessionsQueryDto {

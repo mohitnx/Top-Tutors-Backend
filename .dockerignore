@@ -40,4 +40,14 @@ Dockerfile
 # Documentation
 README.md
 CHANGELOG.md
+FRONTEND_DAILY_PACKAGE.txt
+
+# Tests
+test/
+jest.config*
+*.spec.ts
+*.e2e.ts
+
+# Prisma dev tools (not needed in image)
+prisma/rls/
 

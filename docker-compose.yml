@@ -7,11 +7,13 @@ services:
     container_name: top-tutor-api
     restart: unless-stopped
     ports:
-      - '3000:3000'
+      - '${PORT:-3000}:3000'
+    env_file:
+      - .env
     environment:
       - NODE_ENV=production
       - PORT=3000
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/top_tutor_db?schema=public
+      # DATABASE_URL and DIRECT_DATABASE_URL come from .env
     depends_on:
       db:
         condition: service_healthy
@@ -24,22 +26,22 @@ services:
     container_name: top-tutor-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: top_tutor_db
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-top_tutor_db}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - '5432:5432'
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      test: ['CMD-SHELL', 'pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-top_tutor_db}']
       interval: 5s
       timeout: 5s
       retries: 5
     networks:
       - top-tutor-network
 
-  # pgAdmin (optional - for database management)
+  # pgAdmin — optional database GUI
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: top-tutor-pgadmin
@@ -50,11 +52,12 @@ services:
     ports:
       - '5050:80'
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     networks:
       - top-tutor-network
     profiles:
-      - dev
+      - tools
 
 volumes:
   postgres_data:
@@ -62,4 +65,3 @@ volumes:
 networks:
   top-tutor-network:
     driver: bridge
-

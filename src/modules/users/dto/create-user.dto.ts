@@ -1,54 +1,34 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import {
-  IsEmail,
-  IsString,
-  IsOptional,
-  IsEnum,
-  MinLength,
-  MaxLength,
-} from 'class-validator';
-
-export enum Role {
-  USER = 'USER',
-  ADMIN = 'ADMIN',
-  TUTOR = 'TUTOR',
-  STUDENT = 'STUDENT',
-}
+import { IsEmail, IsString, IsOptional, IsEnum, IsUUID, MaxLength } from 'class-validator';
+import { Role } from '@prisma/client';
 
 export class CreateUserDto {
-  @ApiProperty({
-    example: 'john@example.com',
-    description: 'User email address',
-  })
+  @ApiProperty({ example: 'jane@school.edu', description: 'User email address' })
   @IsEmail()
   email: string;
 
-  @ApiProperty({
-    example: 'John Doe',
-    description: 'User full name',
-    required: false,
-  })
-  @IsOptional()
+  @ApiProperty({ example: 'Jane Smith', description: 'Full name' })
   @IsString()
   @MaxLength(100)
-  name?: string;
+  name: string;
 
   @ApiProperty({
-    example: 'Password123!',
-    description: 'User password (min 8 characters)',
+    enum: ['ADMINISTRATOR', 'TEACHER', 'TUTOR', 'STUDENT'],
+    description: 'Role to assign. ADMIN role is seeded, not created via this endpoint.',
   })
-  @IsString()
-  @MinLength(8)
-  @MaxLength(128)
-  password: string;
+  @IsEnum(Role)
+  role: Role;
 
   @ApiPropertyOptional({
-    enum: Role,
-    example: Role.USER,
-    description: 'User role',
+    example: 'uuid-of-school',
+    description: 'Required if role=ADMINISTRATOR or if student is school-affiliated',
   })
   @IsOptional()
-  @IsEnum(Role)
-  role?: Role;
+  @IsUUID()
+  schoolId?: string;
 }
 
+export class BulkCreateUsersDto {
+  @ApiProperty({ type: [CreateUserDto] })
+  users: CreateUserDto[];
+}

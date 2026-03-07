@@ -21,6 +21,14 @@ import {
 } from './dto';
 import { v4 as uuidv4 } from 'uuid';
 import { EventEmitter } from 'events';
+import {
+  COUNCIL_MEMBERS,
+  CouncilMember,
+  CouncilMemberResponse,
+  SYNTHESIZER_MODEL,
+  SYNTHESIZER_CONFIG,
+  parseCouncilResponse,
+} from '../ai/council-members';
 
 export interface StreamingResponse {
   messageId: string;
@@ -129,6 +137,7 @@ export class GeminiChatService {
         userId,
         title: dto.title || null,
         subject: dto.subject as any,
+        ...(dto.mode && { mode: dto.mode as any }),
       },
     });
 
@@ -165,32 +174,34 @@ export class GeminiChatService {
       ];
     }
 
-    const [sessions, total] = await Promise.all([
-      this.prisma.ai_chat_sessions.findMany({
-        where: whereClause,
-        orderBy: [
-          { isPinned: 'desc' },
-          { lastMessageAt: 'desc' },
-        ],
-        skip,
-        take: limit,
-        include: {
-          ai_messages: {
-            orderBy: { createdAt: 'desc' },
-            take: 1,
-            select: {
-              content: true,
-              role: true,
-              createdAt: true,
+    const [sessions, total] = await this.prisma.withUserContext(userId, (tx) =>
+      Promise.all([
+        tx.ai_chat_sessions.findMany({
+          where: whereClause,
+          orderBy: [
+            { isPinned: 'desc' },
+            { lastMessageAt: 'desc' },
+          ],
+          skip,
+          take: limit,
+          include: {
+            ai_messages: {
+              orderBy: { createdAt: 'desc' },
+              take: 1,
+              select: {
+                content: true,
+                role: true,
+                createdAt: true,
+              },
+            },
+            _count: {
+              select: { ai_messages: true },
             },
           },
-          _count: {
-            select: { ai_messages: true },
-          },
-        },
-      }),
-      this.prisma.ai_chat_sessions.count({ where: whereClause }),
-    ]);
+        }),
+        tx.ai_chat_sessions.count({ where: whereClause }),
+      ])
+    );
 
     return {
       sessions: sessions.map((s: any) => this.formatSession(s, true)),
@@ -208,17 +219,19 @@ export class GeminiChatService {
     session: SessionResponse;
     messages: MessageResponse[];
   }> {
-    const session = await this.prisma.ai_chat_sessions.findFirst({
-      where: { id: sessionId, userId },
-      include: {
-        ai_messages: {
-          orderBy: { createdAt: 'asc' },
+    const session = await this.prisma.withUserContext(userId, (tx) =>
+      tx.ai_chat_sessions.findFirst({
+        where: { id: sessionId, userId },
+        include: {
+          ai_messages: {
+            orderBy: { createdAt: 'asc' },
+          },
+          _count: {
+            select: { ai_messages: true },
+          },
         },
-        _count: {
-          select: { ai_messages: true },
-        },
-      },
-    });
+      })
+    );
 
     if (!session) {
       throw new NotFoundException('Session not found');
@@ -248,6 +261,7 @@ export class GeminiChatService {
         ...(dto.title !== undefined && { title: dto.title }),
         ...(dto.isPinned !== undefined && { isPinned: dto.isPinned }),
         ...(dto.isArchived !== undefined && { isArchived: dto.isArchived }),
+        ...(dto.mode !== undefined && { mode: dto.mode as any }),
       },
     });
 
@@ -418,9 +432,10 @@ export class GeminiChatService {
     // Get or create session
     let session: any;
     if (dto.sessionId) {
-      session = await this.prisma.ai_chat_sessions.findFirst({
-        where: { id: dto.sessionId, userId },
-      });
+      // withUserContext activates RLS — DB enforces ownership even if WHERE clause were removed
+      session = await this.prisma.withUserContext(userId, (tx) =>
+        tx.ai_chat_sessions.findFirst({ where: { id: dto.sessionId, userId } })
+      );
       if (!session) {
         throw new NotFoundException('Session not found');
       }
@@ -429,6 +444,13 @@ export class GeminiChatService {
         data: { userId },
       });
     }
+
+    // Route to council mode if enabled on this session
+    if (session.mode === 'COUNCIL') {
+      this.logger.log(`[MODE] Council mode active for session ${session.id} — routing to multi-expert pipeline`);
+      return this.runCouncilStreaming(session, dto.content || '', attachments, emitter);
+    }
+    this.logger.log(`[MODE] Single AI mode for session ${session.id}`);
 
     // Process attachments
     const processedAttachments = await this.processAttachments(attachments);
@@ -1284,6 +1306,412 @@ export class GeminiChatService {
       feedback: message.feedback,
       createdAt: message.createdAt,
     };
+  }
+
+  // ============ AI Council Mode (GPAI-style multi-model pipeline) ============
+
+  private async runCouncilStreaming(
+    session: any,
+    userContent: string,
+    attachments: Express.Multer.File[] | undefined,
+    emitter: EventEmitter,
+  ): Promise<StreamingResponse> {
+    const processedAttachments = await this.processAttachments(attachments);
+
+    await this.prisma.ai_messages.create({
+      data: {
+        sessionId: session.id,
+        role: 'USER',
+        content: userContent || null,
+        attachments: processedAttachments.length > 0 ? (processedAttachments as any) : undefined,
+      },
+    });
+
+    const streamId = uuidv4();
+    const aiMessage = await this.prisma.ai_messages.create({
+      data: {
+        sessionId: session.id,
+        role: 'ASSISTANT',
+        content: '',
+        isStreaming: true,
+        isComplete: false,
+        streamId,
+      },
+    });
+
+    const now = Date.now();
+    this.activeStreams.set(streamId, {
+      content: '',
+      complete: false,
+      startedAtMs: now,
+      lastActivityAtMs: now,
+      cancelled: false,
+    });
+
+    this.executeCouncil(
+      session.id,
+      aiMessage.id,
+      streamId,
+      userContent,
+      session.subject,
+      attachments,
+      emitter,
+    ).catch((error) => {
+      this.logger.error(`Council error: ${error.message}`);
+      emitter.emit('chunk', {
+        type: 'error',
+        messageId: aiMessage.id,
+        sessionId: session.id,
+        error: error.message,
+      } as StreamChunk);
+    });
+
+    return { messageId: aiMessage.id, sessionId: session.id, emitter };
+  }
+
+  /**
+   * GPAI-style council pipeline:
+   *   Phase 1: Parallel analysis — each member uses its OWN model
+   *   Phase 2: Cross-review — each member critiques the others
+   *   Phase 3: Synthesis — strongest model weaves everything together
+   *
+   * Events are emitted in REAL-TIME as each member finishes (not batched).
+   */
+  private async executeCouncil(
+    sessionId: string,
+    messageId: string,
+    streamId: string,
+    userContent: string,
+    sessionSubject: string | null,
+    attachments: Express.Multer.File[] | undefined,
+    emitter: EventEmitter,
+  ): Promise<void> {
+    const history = await this.getConversationHistory(sessionId, messageId);
+    const promptParts = await this.buildPrompt(userContent, attachments);
+
+    this.logger.log(`[COUNCIL] Starting GPAI-style multi-model council for session ${sessionId}`);
+    this.logger.log(`[COUNCIL] Models: ${COUNCIL_MEMBERS.map((m) => `${m.label}=${m.modelName}`).join(', ')}`);
+
+    // Notify frontend that council analysis is starting
+    emitter.emit('councilStatus', {
+      type: 'councilAnalysisStart',
+      sessionId,
+      messageId,
+      experts: COUNCIL_MEMBERS.map((m) => ({
+        id: m.id,
+        name: m.name,
+        label: m.label,
+        status: 'analyzing',
+      })),
+    });
+
+    // ── Phase 1: Parallel analysis with DIFFERENT models ──
+    const memberStartTime = Date.now();
+    const memberResponses: CouncilMemberResponse[] = [];
+
+    // Use individual promises so we can emit events as each completes (real-time)
+    const memberPromises = COUNCIL_MEMBERS.map(async (member, index) => {
+      this.logger.log(
+        `[COUNCIL] [${member.label}] ${member.name} analyzing via ${member.modelName}...`,
+      );
+      try {
+        const rawText = await this.callCouncilMember(member, history, promptParts, sessionSubject);
+        const parsed = parseCouncilResponse(rawText);
+        const elapsed = Date.now() - memberStartTime;
+
+        this.logger.log(
+          `[COUNCIL] [${member.label}] ${member.name} completed in ${elapsed}ms ` +
+            `(confidence: ${parsed.confidence}, ${parsed.content.length} chars, model: ${member.modelName})`,
+        );
+
+        const response: CouncilMemberResponse = {
+          memberId: member.id,
+          memberName: member.name,
+          memberLabel: member.label,
+          content: parsed.content,
+          confidence: parsed.confidence,
+          keyPoints: parsed.keyPoints,
+        };
+
+        // Emit immediately when this member finishes (real-time, not batched)
+        emitter.emit('councilMemberComplete', {
+          memberId: member.id,
+          memberName: member.name,
+          memberLabel: member.label,
+          content: parsed.content,
+          confidence: parsed.confidence,
+          index,
+          total: COUNCIL_MEMBERS.length,
+        });
+
+        return response;
+      } catch (error: any) {
+        const elapsed = Date.now() - memberStartTime;
+        this.logger.warn(
+          `[COUNCIL] [${member.label}] ${member.name} failed after ${elapsed}ms (model: ${member.modelName}): ${error.message}`,
+        );
+
+        const fallback: CouncilMemberResponse = {
+          memberId: member.id,
+          memberName: member.name,
+          memberLabel: member.label,
+          content: `(${member.name} was unable to respond.)`,
+          confidence: 0,
+          keyPoints: [],
+        };
+
+        emitter.emit('councilMemberComplete', {
+          memberId: member.id,
+          memberName: member.name,
+          memberLabel: member.label,
+          content: fallback.content,
+          confidence: 0,
+          index,
+          total: COUNCIL_MEMBERS.length,
+        });
+
+        return fallback;
+      }
+    });
+
+    const resolvedResponses = await Promise.all(memberPromises);
+    memberResponses.push(...resolvedResponses);
+
+    // ── Phase 2: Cross-review round (GPAI debate) ──
+    this.logger.log(`[COUNCIL] Phase 2: Cross-review round starting...`);
+    emitter.emit('councilStatus', {
+      type: 'councilCrossReviewStart',
+      sessionId,
+      messageId,
+    });
+
+    await this.runCrossReview(memberResponses, userContent, sessionSubject);
+    this.logger.log(`[COUNCIL] Cross-review complete.`);
+
+    // ── Phase 3: Synthesis with strongest model ──
+    this.logger.log(
+      `[COUNCIL] Phase 3: Synthesis via ${SYNTHESIZER_MODEL} — weaving ${memberResponses.length} perspectives...`,
+    );
+    emitter.emit('councilSynthesisStart', { sessionId, messageId });
+
+    const synthesizerPrompt = this.systemInstructions.getSynthesizerPrompt(
+      memberResponses,
+      userContent,
+    );
+
+    await this.streamCouncilSynthesis(
+      sessionId,
+      messageId,
+      streamId,
+      synthesizerPrompt,
+      memberResponses,
+      userContent,
+      emitter,
+    );
+  }
+
+  /**
+   * Call a single council member using its DEDICATED model and config.
+   * Each member has its own Gemini model, temperature, and token limits.
+   */
+  private async callCouncilMember(
+    member: CouncilMember,
+    history: Content[],
+    promptParts: Part[],
+    sessionSubject: string | null,
+  ): Promise<string> {
+    if (!this.genAI) throw new Error('Gemini AI not configured');
+
+    const systemPrompt = this.systemInstructions.getCouncilMemberPrompt(member, sessionSubject);
+
+    const memberModel = this.genAI.getGenerativeModel({
+      model: member.modelName,
+      systemInstruction: { role: 'system', parts: [{ text: systemPrompt }] },
+      generationConfig: {
+        temperature: member.config.temperature,
+        maxOutputTokens: member.config.maxOutputTokens,
+      },
+    });
+
+    const result = await this.withTimeout(
+      memberModel.generateContent({
+        contents: [...history, { role: 'user', parts: promptParts }],
+      }),
+      45000,
+      `Council member ${member.name} (${member.modelName}) timed out`,
+    );
+
+    return result.response.text();
+  }
+
+  /**
+   * GPAI-style cross-review: each council member reviews the other members'
+   * responses and provides brief critique/corrections. This catches errors
+   * and adds nuance before synthesis.
+   */
+  private async runCrossReview(
+    memberResponses: CouncilMemberResponse[],
+    userQuestion: string,
+    sessionSubject: string | null,
+  ): Promise<void> {
+    if (!this.genAI) return;
+
+    const reviewPromises = COUNCIL_MEMBERS.map(async (member) => {
+      try {
+        const reviewSystemPrompt = this.systemInstructions.getCrossReviewPrompt(
+          member,
+          memberResponses,
+          userQuestion,
+        );
+
+        const reviewModel = this.genAI!.getGenerativeModel({
+          model: member.modelName,
+          systemInstruction: { role: 'system', parts: [{ text: reviewSystemPrompt }] },
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: member.config.reviewMaxTokens,
+          },
+        });
+
+        const result = await this.withTimeout(
+          reviewModel.generateContent({
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: 'Please review the other experts\' responses.' }],
+              },
+            ],
+          }),
+          20000,
+          `Cross-review by ${member.name} timed out`,
+        );
+
+        const review = result.response.text().trim();
+        const memberResponse = memberResponses.find((r) => r.memberId === member.id);
+        if (memberResponse) {
+          memberResponse.review = review;
+        }
+
+        this.logger.log(
+          `[COUNCIL] [REVIEW] ${member.name} reviewed peers: "${review.substring(0, 80)}..."`,
+        );
+      } catch (error: any) {
+        this.logger.warn(`[COUNCIL] [REVIEW] ${member.name} review failed: ${error.message}`);
+        // Cross-review is optional — synthesis proceeds without it
+      }
+    });
+
+    await Promise.allSettled(reviewPromises);
+  }
+
+  /**
+   * Stream the final synthesis using the dedicated synthesizer model (strongest model).
+   */
+  private async streamCouncilSynthesis(
+    sessionId: string,
+    messageId: string,
+    streamId: string,
+    synthesizerSystemPrompt: string,
+    memberResponses: CouncilMemberResponse[],
+    userContent: string,
+    emitter: EventEmitter,
+  ): Promise<void> {
+    if (!this.genAI) throw new Error('Gemini AI not configured');
+
+    const synthesisModel = this.genAI.getGenerativeModel({
+      model: SYNTHESIZER_MODEL,
+      systemInstruction: { role: 'system', parts: [{ text: synthesizerSystemPrompt }] },
+      generationConfig: {
+        temperature: SYNTHESIZER_CONFIG.temperature,
+        maxOutputTokens: SYNTHESIZER_CONFIG.maxOutputTokens,
+      },
+    });
+
+    this.logger.log(
+      `[COUNCIL] Synthesizer model: ${SYNTHESIZER_MODEL} — weaving ${memberResponses.length} expert perspectives...`,
+    );
+    emitter.emit('chunk', {
+      type: 'start',
+      messageId,
+      sessionId,
+      message: 'Synthesizing perspectives...',
+    } as StreamChunk);
+
+    const result = await synthesisModel.generateContentStream({
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: 'Please synthesize the perspectives above into a complete answer.' }],
+        },
+      ],
+    });
+
+    let fullContent = '';
+    const iterator = (result.stream as any)[Symbol.asyncIterator]?.();
+    if (iterator && typeof iterator.next === 'function') {
+      while (true) {
+        const next: any = await this.withTimeout(
+          iterator.next(),
+          90000,
+          'Synthesis stream idle timeout',
+        );
+        if (next.done) break;
+        const chunkText = next.value?.text ? next.value.text() : '';
+        fullContent += chunkText;
+
+        const streamData = this.activeStreams.get(streamId);
+        if (streamData) {
+          streamData.content = fullContent;
+          streamData.lastActivityAtMs = Date.now();
+        }
+
+        emitter.emit('chunk', {
+          type: 'chunk',
+          messageId,
+          sessionId,
+          content: chunkText,
+          fullContent,
+        } as StreamChunk);
+      }
+    }
+
+    // Strip metadata from council responses before persisting (clean for frontend)
+    const cleanResponses = memberResponses.map((r) => ({
+      memberId: r.memberId,
+      memberName: r.memberName,
+      memberLabel: r.memberLabel,
+      content: r.content,
+      confidence: r.confidence,
+      keyPoints: r.keyPoints,
+    }));
+
+    await this.prisma.ai_messages.update({
+      where: { id: messageId },
+      data: {
+        content: fullContent,
+        isStreaming: false,
+        isComplete: true,
+        councilResponses: cleanResponses as any,
+      },
+    });
+
+    const streamData = this.activeStreams.get(streamId);
+    if (streamData) streamData.complete = true;
+
+    await this.updateSessionAfterMessage(sessionId, userContent, fullContent);
+
+    this.logger.log(
+      `[COUNCIL] Synthesis complete (${fullContent.length} chars). Council response delivered.`,
+    );
+
+    emitter.emit('chunk', {
+      type: 'end',
+      messageId,
+      sessionId,
+      fullContent,
+    } as StreamChunk);
+
+    setTimeout(() => this.activeStreams.delete(streamId), 60000);
   }
 }
 

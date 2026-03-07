@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install @nestjs-modules/mailer nodemailer handlebars)",
+      "Bash(npm install @types/nodemailer --save-dev)",
+      "Bash(npx prisma validate)",
+      "Bash(npx prisma migrate reset --force)",
+      "Bash(npx prisma db push --force-reset)",
+      "Bash(npm run build)",
+      "Bash(npm run prisma:seed)",
+      "Bash(npm run db:push)",
+      "Bash(python3 -c \":*)",
+      "Bash(python3:*)"
+    ]
+  }
+}

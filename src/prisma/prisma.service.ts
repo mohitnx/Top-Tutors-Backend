@@ -1,5 +1,5 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
@@ -25,6 +25,30 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   async onModuleDestroy() {
     await this.$disconnect();
     this.logger.log('Database connection closed');
+  }
+
+  /**
+   * Executes a callback inside a short transaction with the current user's ID
+   * set as a transaction-local PostgreSQL config variable (`app.current_user_id`).
+   *
+   * RLS policies on `ai_chat_sessions`, `ai_messages`, `students`, and
+   * `conversations` enforce row-level isolation when this context is active.
+   * When context is NOT set (admin ops, writes, seed scripts), the policies
+   * allow all rows through — no regressions on existing code.
+   *
+   * Usage:
+   *   const sessions = await this.prisma.withUserContext(userId, (tx) =>
+   *     tx.ai_chat_sessions.findMany({ where: { userId } })
+   *   );
+   */
+  async withUserContext<T>(
+    userId: string,
+    fn: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    return this.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT set_config('app.current_user_id', ${userId}, true)`;
+      return fn(tx);
+    });
   }
 
   async cleanDatabase() {

@@ -2,139 +2,250 @@ import {
   Injectable,
   NotFoundException,
   ConflictException,
+  BadRequestException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { EmailService } from '../email/email.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserResponseDto } from './dto/user-response.dto';
 import { PaginationDto } from './dto/pagination.dto';
-import * as bcrypt from 'bcrypt';
+import { Role } from '@prisma/client';
+import { v4 as uuidv4 } from 'uuid';
+import * as crypto from 'crypto';
 
 @Injectable()
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly emailService: EmailService,
+  ) {}
 
-  async create(createUserDto: CreateUserDto): Promise<UserResponseDto> {
-    // Check if user already exists
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email: createUserDto.email },
-    });
+  async createUser(dto: CreateUserDto, currentUser?: any): Promise<UserResponseDto> {
+    const normalizedEmail = dto.email.trim().toLowerCase();
 
-    if (existingUser) {
-      throw new ConflictException('User with this email already exists');
+    // ADMINISTRATOR can only create TEACHER and STUDENT, auto-scoped to their school
+    if (currentUser?.role === 'ADMINISTRATOR') {
+      if (dto.role !== Role.TEACHER && dto.role !== Role.STUDENT) {
+        throw new ForbiddenException('Administrators can only create TEACHER and STUDENT users');
+      }
+      if (!currentUser.administeredSchoolId) {
+        throw new ForbiddenException('Administrator is not linked to a school');
+      }
+      // Auto-fill schoolId — administrator cannot create users for other schools
+      dto.schoolId = currentUser.administeredSchoolId;
     }
 
-    // Hash password with bcrypt
-    const hashedPassword = await this.hashPassword(createUserDto.password);
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email: normalizedEmail },
+    });
+    if (existingUser) {
+      throw new ConflictException('A user with this email already exists');
+    }
 
-    const user = await this.prisma.user.create({
-      data: {
-        ...createUserDto,
-        password: hashedPassword,
-      },
+    // Validate school constraint
+    if (dto.role === Role.ADMINISTRATOR) {
+      if (!dto.schoolId) {
+        throw new BadRequestException('schoolId is required for ADMINISTRATOR role');
+      }
+      const school = await this.prisma.school.findUnique({ where: { id: dto.schoolId } });
+      if (!school) throw new NotFoundException(`School ${dto.schoolId} not found`);
+
+      // Ensure school has no existing administrator
+      const existingAdmin = await this.prisma.user.findFirst({
+        where: { administeredSchoolId: dto.schoolId },
+      });
+      if (existingAdmin) {
+        throw new ConflictException('This school already has an administrator');
+      }
+    }
+
+    if (dto.role === Role.TEACHER) {
+      if (!dto.schoolId) {
+        throw new BadRequestException('schoolId is required for TEACHER role');
+      }
+      const school = await this.prisma.school.findUnique({ where: { id: dto.schoolId } });
+      if (!school) throw new NotFoundException(`School ${dto.schoolId} not found`);
+    }
+
+    if (dto.schoolId && dto.role === Role.STUDENT) {
+      const school = await this.prisma.school.findUnique({ where: { id: dto.schoolId } });
+      if (!school) throw new NotFoundException(`School ${dto.schoolId} not found`);
+    }
+
+    const invitationToken = crypto.randomBytes(32).toString('hex');
+    const invitationExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
+    const user = await this.prisma.$transaction(async (tx) => {
+      const newUser = await tx.user.create({
+        data: {
+          email: normalizedEmail,
+          name: dto.name,
+          role: dto.role,
+          isActive: false,
+          invitationToken,
+          invitationExpiresAt,
+          ...(dto.role === Role.ADMINISTRATOR && dto.schoolId
+            ? { administeredSchoolId: dto.schoolId }
+            : {}),
+        },
+      });
+
+      if (dto.role === Role.STUDENT) {
+        await tx.students.create({
+          data: {
+            id: uuidv4(),
+            userId: newUser.id,
+            schoolId: dto.schoolId ?? null,
+            updatedAt: new Date(),
+          },
+        });
+      } else if (dto.role === Role.TUTOR) {
+        await tx.tutors.create({
+          data: {
+            id: uuidv4(),
+            userId: newUser.id,
+            updatedAt: new Date(),
+          },
+        });
+      } else if (dto.role === Role.TEACHER && dto.schoolId) {
+        await tx.teachers.create({
+          data: {
+            userId: newUser.id,
+            schoolId: dto.schoolId,
+          },
+        });
+      }
+
+      return newUser;
     });
 
-    this.logger.log(`User created: ${user.id}`);
-    return this.mapToResponse(user);
+    // Send invitation email (non-blocking — log error but don't fail the request)
+    this.emailService.sendInvitation(user.email, user.name, invitationToken, user.role).catch((err) => {
+      this.logger.error(`Could not send invitation email to ${user.email}: ${err.message}`);
+    });
+
+    this.logger.log(`User created and invitation sent: ${user.id} (${user.role})`);
+    return this.mapToResponse(user, dto.schoolId);
   }
 
-  async findAll(paginationDto: PaginationDto) {
+  async bulkCreateUsers(dtos: CreateUserDto[], currentUser?: any): Promise<{ created: UserResponseDto[]; failed: { email: string; reason: string }[] }> {
+    const created: UserResponseDto[] = [];
+    const failed: { email: string; reason: string }[] = [];
+
+    for (const dto of dtos) {
+      try {
+        const user = await this.createUser(dto, currentUser);
+        created.push(user);
+      } catch (err) {
+        failed.push({ email: dto.email, reason: err.message });
+      }
+    }
+
+    return { created, failed };
+  }
+
+  async resendInvitation(userId: string, currentUser?: any): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: { students: true, teachers: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+    if (user.isActive) throw new BadRequestException('User has already accepted their invitation');
+
+    // ADMINISTRATOR can only resend invitations for users in their school
+    if (currentUser?.role === 'ADMINISTRATOR') {
+      const userSchoolId = user.teachers?.schoolId ?? user.students?.schoolId;
+      if (userSchoolId !== currentUser.administeredSchoolId) {
+        throw new ForbiddenException('You can only resend invitations for users in your school');
+      }
+    }
+
+    const invitationToken = crypto.randomBytes(32).toString('hex');
+    const invitationExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { invitationToken, invitationExpiresAt },
+    });
+
+    await this.emailService.sendInvitation(user.email, user.name, invitationToken, user.role);
+    this.logger.log(`Invitation resent to ${user.email}`);
+  }
+
+  async findAll(paginationDto: PaginationDto, currentUser?: any) {
     const { page = 1, limit = 10 } = paginationDto;
     const skip = (page - 1) * limit;
 
+    // ADMINISTRATOR only sees teachers and students belonging to their school
+    const where = currentUser?.role === 'ADMINISTRATOR' && currentUser.administeredSchoolId
+      ? {
+          OR: [
+            { teachers: { schoolId: currentUser.administeredSchoolId } },
+            { students: { schoolId: currentUser.administeredSchoolId } },
+          ],
+        }
+      : {};
+
     const [users, total] = await Promise.all([
       this.prisma.user.findMany({
+        where,
         skip,
         take: limit,
         orderBy: { createdAt: 'desc' },
+        include: { students: true },
       }),
-      this.prisma.user.count(),
+      this.prisma.user.count({ where }),
     ]);
 
     return {
-      data: users.map(user => this.mapToResponse(user)),
-      meta: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+      data: users.map((u) => this.mapToResponse(u, u.students?.schoolId)),
+      meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
     };
   }
 
   async findOne(id: string): Promise<UserResponseDto> {
     const user = await this.prisma.user.findUnique({
       where: { id },
+      include: { students: true },
     });
-
-    if (!user) {
-      throw new NotFoundException(`User with ID ${id} not found`);
-    }
-
-    return this.mapToResponse(user);
-  }
-
-  async findByEmail(email: string) {
-    return this.prisma.user.findUnique({
-      where: { email },
-    });
+    if (!user) throw new NotFoundException(`User ${id} not found`);
+    return this.mapToResponse(user, user.students?.schoolId);
   }
 
   async update(id: string, updateUserDto: UpdateUserDto): Promise<UserResponseDto> {
-    await this.findOne(id); // Check if user exists
-
-    const updateData: Record<string, unknown> = { ...updateUserDto };
-
-    if (updateUserDto.password) {
-      updateData.password = await this.hashPassword(updateUserDto.password);
-    }
-
+    await this.findOne(id);
     const user = await this.prisma.user.update({
       where: { id },
-      data: updateData,
+      data: updateUserDto as any,
+      include: { students: true },
     });
-
-    this.logger.log(`User updated: ${user.id}`);
-    return this.mapToResponse(user);
+    return this.mapToResponse(user, user.students?.schoolId);
   }
 
   async remove(id: string): Promise<void> {
-    await this.findOne(id); // Check if user exists
-
-    await this.prisma.user.delete({
-      where: { id },
-    });
-
+    await this.findOne(id);
+    await this.prisma.user.delete({ where: { id } });
     this.logger.log(`User deleted: ${id}`);
   }
 
-  // Secure password hashing with bcrypt
-  private async hashPassword(password: string): Promise<string> {
-    const saltRounds = 12;
-    return bcrypt.hash(password, saltRounds);
-  }
-
-  private mapToResponse(user: {
-    id: string;
-    email: string;
-    name: string | null;
-    role: string;
-    isActive: boolean;
-    createdAt: Date;
-    updatedAt: Date;
-  }): UserResponseDto {
+  private mapToResponse(
+    user: { id: string; email: string; name: string; role: string; isActive: boolean; createdAt: Date; updatedAt: Date },
+    schoolId?: string | null,
+  ): UserResponseDto {
     return {
       id: user.id,
       email: user.email,
       name: user.name,
       role: user.role,
       isActive: user.isActive,
+      schoolId: schoolId ?? null,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };
   }
 }
-

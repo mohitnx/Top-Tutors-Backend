@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Role, Subject } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -9,198 +9,207 @@ async function hashPassword(password: string): Promise<string> {
 }
 
 async function main() {
-  console.log('🌱 Starting database seeding...');
+  console.log('Seeding database...');
 
-  // Create admin user
+  // ─── Super Admin (active, password set — no invitation needed) ───────────
   const admin = await prisma.user.upsert({
-    where: { email: 'admin@toptutor.com' },
+    where: { email: 'admin@toptutors.com' },
     update: {},
     create: {
-      email: 'admin@toptutor.com',
-      name: 'Admin User',
-      password: await hashPassword('Admin123!'),
-      role: 'ADMIN',
+      email: 'admin@toptutors.com',
+      name: 'Platform Admin',
+      password: await hashPassword('Admin@123'),
+      role: Role.ADMIN,
+      isActive: true,
+    },
+  });
+  console.log(`Admin: ${admin.email}`);
+
+  // ─── Schools ──────────────────────────────────────────────────────────────
+  const school1 = await prisma.school.upsert({
+    where: { code: 'SPH-001' },
+    update: {},
+    create: {
+      name: 'Springfield High School',
+      code: 'SPH-001',
+      city: 'Springfield',
+      country: 'US',
     },
   });
 
-  // Create sample tutors with profiles
-  const tutorUser1 = await prisma.user.upsert({
-    where: { email: 'tutor@toptutor.com' },
+  const school2 = await prisma.school.upsert({
+    where: { code: 'LMS-001' },
     update: {},
     create: {
-      email: 'tutor@toptutor.com',
+      name: 'Lincoln Middle School',
+      code: 'LMS-001',
+      city: 'Lincoln',
+      country: 'US',
+    },
+  });
+  console.log(`Schools: ${school1.name}, ${school2.name}`);
+
+  // ─── School Administrator for school1 ────────────────────────────────────
+  const adminUser = await prisma.user.upsert({
+    where: { email: 'admin.sph@toptutors.com' },
+    update: {},
+    create: {
+      email: 'admin.sph@toptutors.com',
+      name: 'Sarah Wilson',
+      password: await hashPassword('Admin@123'),
+      role: Role.ADMINISTRATOR,
+      isActive: true,
+      administeredSchoolId: school1.id,
+    },
+  });
+  console.log(`Administrator: ${adminUser.email} → ${school1.name}`);
+
+  // ─── Tutors (platform-wide) ───────────────────────────────────────────────
+  const tutor1User = await prisma.user.upsert({
+    where: { email: 'john.math@toptutors.com' },
+    update: {},
+    create: {
+      email: 'john.math@toptutors.com',
       name: 'John Mathematics',
-      password: await hashPassword('Tutor123!'),
-      role: 'TUTOR',
+      password: await hashPassword('Tutor@123'),
+      role: Role.TUTOR,
+      isActive: true,
     },
   });
 
-  // Create tutor profile
-  const tutorId1 = uuidv4();
-  await (prisma as any).tutors.upsert({
-    where: { userId: tutorUser1.id },
+  await prisma.tutors.upsert({
+    where: { userId: tutor1User.id },
     update: {},
     create: {
-      id: tutorId1,
-      userId: tutorUser1.id,
-      bio: 'Experienced mathematics tutor with 10+ years of experience',
-      qualification: 'PhD in Mathematics from MIT',
+      id: uuidv4(),
+      userId: tutor1User.id,
+      bio: 'Passionate mathematics educator with 10 years of experience.',
+      qualification: 'MSc Mathematics',
       experience: 10,
-      hourlyRate: 50.0,
+      hourlyRate: 50,
+      subjects: [Subject.MATHEMATICS, Subject.PHYSICS],
       isVerified: true,
-      isAvailable: true,
       rating: 4.8,
-      subjects: ['MATHEMATICS', 'PHYSICS'],
       updatedAt: new Date(),
     },
   });
 
-  const tutorUser2 = await prisma.user.upsert({
-    where: { email: 'tutor2@toptutor.com' },
+  const tutor2User = await prisma.user.upsert({
+    where: { email: 'emma.science@toptutors.com' },
     update: {},
     create: {
-      email: 'tutor2@toptutor.com',
-      name: 'Sarah Science',
-      password: await hashPassword('Tutor123!'),
-      role: 'TUTOR',
+      email: 'emma.science@toptutors.com',
+      name: 'Emma Science',
+      password: await hashPassword('Tutor@123'),
+      role: Role.TUTOR,
+      isActive: true,
     },
   });
 
-  const tutorId2 = uuidv4();
-  await (prisma as any).tutors.upsert({
-    where: { userId: tutorUser2.id },
+  await prisma.tutors.upsert({
+    where: { userId: tutor2User.id },
     update: {},
     create: {
-      id: tutorId2,
-      userId: tutorUser2.id,
-      bio: 'Passionate about making science accessible to everyone',
-      qualification: 'MSc in Physics, BSc in Chemistry',
+      id: uuidv4(),
+      userId: tutor2User.id,
+      bio: 'Chemistry and Biology specialist with a PhD in Life Sciences.',
+      qualification: 'PhD Biology',
       experience: 7,
-      hourlyRate: 45.0,
+      hourlyRate: 60,
+      subjects: [Subject.CHEMISTRY, Subject.BIOLOGY],
       isVerified: true,
-      isAvailable: true,
       rating: 4.9,
-      subjects: ['PHYSICS', 'CHEMISTRY', 'BIOLOGY'],
       updatedAt: new Date(),
     },
   });
+  console.log(`Tutors: ${tutor1User.email}, ${tutor2User.email}`);
 
-  const tutorUser3 = await prisma.user.upsert({
-    where: { email: 'tutor3@toptutor.com' },
+  // ─── Students (school-affiliated — SAP enabled) ───────────────────────────
+  const student1User = await prisma.user.upsert({
+    where: { email: 'alice@sph.edu' },
     update: {},
     create: {
-      email: 'tutor3@toptutor.com',
-      name: 'Mike Computer Science',
-      password: await hashPassword('Tutor123!'),
-      role: 'TUTOR',
+      email: 'alice@sph.edu',
+      name: 'Alice Johnson',
+      password: await hashPassword('Student@123'),
+      role: Role.STUDENT,
+      isActive: true,
     },
   });
 
-  const tutorId3 = uuidv4();
-  await (prisma as any).tutors.upsert({
-    where: { userId: tutorUser3.id },
+  await prisma.students.upsert({
+    where: { userId: student1User.id },
     update: {},
     create: {
-      id: tutorId3,
-      userId: tutorUser3.id,
-      bio: 'Software engineer turned educator, specialized in CS fundamentals',
-      qualification: 'MS in Computer Science from Stanford',
-      experience: 5,
-      hourlyRate: 60.0,
-      isVerified: true,
-      isAvailable: true,
-      rating: 4.7,
-      subjects: ['COMPUTER_SCIENCE', 'MATHEMATICS'],
-      updatedAt: new Date(),
-    },
-  });
-
-  // Create sample student with profile
-  const studentUser = await prisma.user.upsert({
-    where: { email: 'student@toptutor.com' },
-    update: {},
-    create: {
-      email: 'student@toptutor.com',
-      name: 'Jane Student',
-      password: await hashPassword('Student123!'),
-      role: 'STUDENT',
-    },
-  });
-
-  const studentId = uuidv4();
-  await (prisma as any).students.upsert({
-    where: { userId: studentUser.id },
-    update: {},
-    create: {
-      id: studentId,
-      userId: studentUser.id,
+      id: uuidv4(),
+      userId: student1User.id,
+      schoolId: school1.id, // affiliated → SAP enabled
       grade: 'Grade 11',
-      school: 'Springfield High School',
-      phoneNumber: '+1234567890',
       updatedAt: new Date(),
     },
   });
 
-  // Create sample courses linked to tutors
-  const courses = await Promise.all([
-    prisma.course.upsert({
-      where: { id: 'course-1' },
-      update: {},
-      create: {
-        id: 'course-1',
-        title: 'Introduction to Mathematics',
-        description: 'Learn the fundamentals of mathematics',
-        price: 99.99,
-        isPublished: true,
-        tutorId: tutorId1,
-      },
-    }),
-    prisma.course.upsert({
-      where: { id: 'course-2' },
-      update: {},
-      create: {
-        id: 'course-2',
-        title: 'Advanced Physics',
-        description: 'Deep dive into physics concepts',
-        price: 149.99,
-        isPublished: true,
-        tutorId: tutorId2,
-      },
-    }),
-    prisma.course.upsert({
-      where: { id: 'course-3' },
-      update: {},
-      create: {
-        id: 'course-3',
-        title: 'Computer Science Fundamentals',
-        description: 'Learn programming and algorithms',
-        price: 129.99,
-        isPublished: true,
-        tutorId: tutorId3,
-      },
-    }),
-  ]);
-
-  console.log('✅ Database seeding completed!');
-  console.log({
-    users: {
-      admin: admin.email,
-      tutors: [tutorUser1.email, tutorUser2.email, tutorUser3.email],
-      student: studentUser.email,
+  const student2User = await prisma.user.upsert({
+    where: { email: 'bob@lms.edu' },
+    update: {},
+    create: {
+      email: 'bob@lms.edu',
+      name: 'Bob Smith',
+      password: await hashPassword('Student@123'),
+      role: Role.STUDENT,
+      isActive: true,
     },
-    courses: courses.map(c => c.title),
-    tutorProfiles: 3,
-    studentProfiles: 1,
   });
-  console.log('\n📋 Test Credentials:');
-  console.log('  Admin:   admin@toptutor.com / Admin123!');
-  console.log('  Tutor:   tutor@toptutor.com / Tutor123!');
-  console.log('  Student: student@toptutor.com / Student123!');
+
+  await prisma.students.upsert({
+    where: { userId: student2User.id },
+    update: {},
+    create: {
+      id: uuidv4(),
+      userId: student2User.id,
+      schoolId: school2.id, // affiliated → SAP enabled
+      grade: 'Grade 8',
+      updatedAt: new Date(),
+    },
+  });
+
+  // ─── Student (unaffiliated — no SAP) ─────────────────────────────────────
+  const student3User = await prisma.user.upsert({
+    where: { email: 'carol@gmail.com' },
+    update: {},
+    create: {
+      email: 'carol@gmail.com',
+      name: 'Carol Davis',
+      password: await hashPassword('Student@123'),
+      role: Role.STUDENT,
+      isActive: true,
+    },
+  });
+
+  await prisma.students.upsert({
+    where: { userId: student3User.id },
+    update: {},
+    create: {
+      id: uuidv4(),
+      userId: student3User.id,
+      schoolId: null, // no school → SAP disabled
+      updatedAt: new Date(),
+    },
+  });
+  console.log(`Students: ${student1User.email} (SPH), ${student2User.email} (LMS), ${student3User.email} (unaffiliated)`);
+
+  console.log('\nSeeding complete.');
+  console.log('Login credentials for development:');
+  console.log('  Admin:          admin@toptutors.com / Admin@123');
+  console.log('  Administrator:  admin.sph@toptutors.com / Admin@123');
+  console.log('  Tutor:          john.math@toptutors.com / Tutor@123');
+  console.log('  Student (SAP):  alice@sph.edu / Student@123');
+  console.log('  Student (no SAP): carol@gmail.com / Student@123');
 }
 
 main()
-  .catch(e => {
-    console.error('❌ Seeding failed:', e);
+  .catch((e) => {
+    console.error(e);
     process.exit(1);
   })
   .finally(async () => {
