@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SystemInstructionsService } from '../ai/system-instructions/system-instructions.service';
 import { LlmService, LlmMessage, LlmContentPart, LlmStream } from '../llm';
+import { LlmProvider } from '../prompts/types/prompt.types';
 import { PromptService } from '../prompts/prompt.service';
 import {
   CreateSessionDto,
@@ -65,34 +66,44 @@ export class GeminiChatService {
   /**
    * Get or detect a working model name (tries multiple models via LlmService)
    */
+  private workingProvider: string | null = null;
+
   private async getWorkingModelName(): Promise<string> {
     if (this.workingModelName) return this.workingModelName;
 
-    const resolved = this.llm.resolvePrompt('tutor-chat-single');
-
-    for (const modelName of resolved.models) {
-      try {
-        const testResult = await this.llm.generate(
-          this.llm.getDefaultProvider(),
-          [{ role: 'user', parts: [{ text: 'Hi' }] }],
-          {
-            model: modelName,
-            systemPrompt: resolved.systemPrompt || undefined,
-            generationConfig: resolved.generationConfig,
-          },
-        );
-        if (testResult.text) {
-          this.workingModelName = modelName;
-          this.logger.log(`Using model: ${modelName} (provider: ${this.llm.getDefaultProvider()})`);
-          return modelName;
+    // Try each available provider in priority order
+    const providers = this.llm.getAvailableProviders();
+    for (const providerName of providers) {
+      const resolved = this.llm.resolvePrompt('tutor-chat-single', undefined, providerName);
+      for (const modelName of resolved.models) {
+        try {
+          const testResult = await this.llm.generate(
+            providerName,
+            [{ role: 'user', parts: [{ text: 'Hi' }] }],
+            {
+              model: modelName,
+              systemPrompt: resolved.systemPrompt || undefined,
+              generationConfig: resolved.generationConfig,
+            },
+          );
+          if (testResult.text) {
+            this.workingModelName = modelName;
+            this.workingProvider = providerName;
+            this.logger.log(`Using model: ${modelName} (provider: ${providerName})`);
+            return modelName;
+          }
+        } catch (error: any) {
+          this.logger.warn(`[${providerName}] Model ${modelName} failed: ${error.message}`);
+          continue;
         }
-      } catch (error: any) {
-        this.logger.warn(`Model ${modelName} failed: ${error.message}`);
-        continue;
       }
     }
 
-    throw new InternalServerErrorException('No working LLM model found. Check your API key.');
+    throw new InternalServerErrorException('No working LLM model found. Check your API keys.');
+  }
+
+  private getActiveProvider(): LlmProvider {
+    return (this.workingProvider as LlmProvider) || this.llm.getDefaultProvider();
   }
 
   // ============ Session Management ============
@@ -319,7 +330,7 @@ export class GeminiChatService {
       ];
 
       // Generate response
-      const result = await this.llm.generate(this.llm.getDefaultProvider(), messages, {
+      const result = await this.llm.generate(this.getActiveProvider(), messages, {
         model: modelName,
         systemPrompt: resolved.systemPrompt || undefined,
         generationConfig: resolved.generationConfig,
@@ -520,7 +531,7 @@ export class GeminiChatService {
 
       // Stream via LlmService
       const llmStream = await this.llm.stream(
-        this.llm.getDefaultProvider(),
+        this.getActiveProvider(),
         [...history, { role: 'user', parts: promptParts }],
         {
           model: modelName,
@@ -1436,7 +1447,7 @@ export class GeminiChatService {
     ];
 
     const result = await this.withTimeout(
-      this.llm.generate(this.llm.getDefaultProvider(), messages, {
+      this.llm.generate(this.getActiveProvider(), messages, {
         model: member.modelName,
         systemPrompt,
         generationConfig: {
@@ -1474,7 +1485,7 @@ export class GeminiChatService {
         ];
 
         const result = await this.withTimeout(
-          this.llm.generate(this.llm.getDefaultProvider(), messages, {
+          this.llm.generate(this.getActiveProvider(), messages, {
             model: member.modelName,
             systemPrompt: reviewSystemPrompt,
             generationConfig: {
@@ -1530,7 +1541,7 @@ export class GeminiChatService {
       { role: 'user', parts: [{ text: 'Please synthesize the perspectives above into a complete answer.' }] },
     ];
 
-    const llmStream = await this.llm.stream(this.llm.getDefaultProvider(), messages, {
+    const llmStream = await this.llm.stream(this.getActiveProvider(), messages, {
       model: SYNTHESIZER_MODEL,
       systemPrompt: synthesizerSystemPrompt,
       generationConfig: {

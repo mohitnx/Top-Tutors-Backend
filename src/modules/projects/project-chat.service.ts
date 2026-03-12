@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { ProjectsService } from './projects.service';
 import { LlmService, LlmMessage, LlmContentPart } from '../llm';
+import { LlmProvider } from '../prompts/types/prompt.types';
 import {
   CreateProjectChatSessionDto,
   SendProjectMessageDto,
@@ -409,7 +410,7 @@ export class ProjectChatService {
         { role: 'user', parts: promptParts },
       ];
 
-      const llmStream = await this.llm.stream(this.llm.getDefaultProvider(), messages, {
+      const llmStream = await this.llm.stream(this.getActiveProvider(), messages, {
         model: modelName,
         systemPrompt,
         generationConfig: genConfig,
@@ -545,30 +546,39 @@ export class ProjectChatService {
 
   // ============ Helpers ============
 
+  private workingProvider: string | null = null;
+
   private async getWorkingModelName(): Promise<string> {
     if (this.workingModelName) return this.workingModelName;
 
-    const resolved = this.llm.resolvePrompt('project-chat');
-
-    for (const modelName of resolved.models) {
-      try {
-        const testResult = await this.llm.generate(
-          this.llm.getDefaultProvider(),
-          [{ role: 'user', parts: [{ text: 'Hi' }] }],
-          { model: modelName },
-        );
-        if (testResult.text) {
-          this.workingModelName = modelName;
-          this.logger.log(`Project Chat: Using model ${modelName} (provider: ${this.llm.getDefaultProvider()})`);
-          return modelName;
+    const providers = this.llm.getAvailableProviders();
+    for (const providerName of providers) {
+      const resolved = this.llm.resolvePrompt('project-chat', undefined, providerName);
+      for (const modelName of resolved.models) {
+        try {
+          const testResult = await this.llm.generate(
+            providerName,
+            [{ role: 'user', parts: [{ text: 'Hi' }] }],
+            { model: modelName },
+          );
+          if (testResult.text) {
+            this.workingModelName = modelName;
+            this.workingProvider = providerName;
+            this.logger.log(`Project Chat: Using model ${modelName} (provider: ${providerName})`);
+            return modelName;
+          }
+        } catch (error: any) {
+          this.logger.warn(`Project Chat: [${providerName}] Model ${modelName} failed: ${error.message}`);
+          continue;
         }
-      } catch (error: any) {
-        this.logger.warn(`Project Chat: Model ${modelName} failed: ${error.message}`);
-        continue;
       }
     }
 
     throw new InternalServerErrorException('No working LLM model found for project chat');
+  }
+
+  private getActiveProvider(): LlmProvider {
+    return (this.workingProvider as LlmProvider) || this.llm.getDefaultProvider();
   }
 
   private buildProjectSystemPrompt(project: any): string {
