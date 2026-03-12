@@ -1,42 +1,40 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import {
-  S3Client,
-  PutObjectCommand,
-  DeleteObjectCommand,
-  GetObjectCommand,
-} from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { Storage, Bucket } from '@google-cloud/storage';
 
 @Injectable()
 export class StorageService {
   private readonly logger = new Logger(StorageService.name);
-  private readonly s3: S3Client;
-  private readonly bucket: string;
+  private readonly storage: Storage;
+  private readonly bucket: Bucket;
+  private readonly bucketName: string;
   private readonly publicUrl: string | undefined;
 
   constructor(private readonly config: ConfigService) {
-    this.bucket = config.get<string>('AWS_S3_BUCKET', 'top-tutors');
-    this.publicUrl = config.get<string>('AWS_S3_PUBLIC_URL');
+    const projectId = config.get<string>('GCS_PROJECT_ID', '');
+    const keyFilename = config.get<string>('GCS_KEY_FILE', '');
+    this.bucketName = config.get<string>('GCS_BUCKET', '');
+    this.publicUrl = config.get<string>('GCS_PUBLIC_URL');
 
-    this.s3 = new S3Client({
-      region: config.get<string>('AWS_REGION', 'us-east-1'),
-      credentials: {
-        accessKeyId: config.get<string>('AWS_ACCESS_KEY_ID', ''),
-        secretAccessKey: config.get<string>('AWS_SECRET_ACCESS_KEY', ''),
-      },
-    });
+    if (!this.bucketName) {
+      this.logger.error('GCS_BUCKET is missing — file uploads will fail!');
+    }
+
+    // Supports both key-file auth (local dev) and Application Default Credentials (Cloud Run/GKE)
+    const storageOptions: Record<string, any> = {};
+    if (projectId) storageOptions.projectId = projectId;
+    if (keyFilename) storageOptions.keyFilename = keyFilename;
+
+    this.storage = new Storage(storageOptions);
+    this.bucket = this.storage.bucket(this.bucketName);
   }
 
   async uploadBuffer(key: string, buffer: Buffer, mimeType: string): Promise<string> {
-    await this.s3.send(
-      new PutObjectCommand({
-        Bucket: this.bucket,
-        Key: key,
-        Body: buffer,
-        ContentType: mimeType,
-      }),
-    );
+    const file = this.bucket.file(key);
+    await file.save(buffer, {
+      contentType: mimeType,
+      resumable: false,
+    });
 
     if (this.publicUrl) {
       return `${this.publicUrl}/${key}`;
@@ -45,12 +43,16 @@ export class StorageService {
   }
 
   async getSignedUrl(key: string, expiresIn = 3600): Promise<string> {
-    const command = new GetObjectCommand({ Bucket: this.bucket, Key: key });
-    return getSignedUrl(this.s3, command, { expiresIn });
+    const file = this.bucket.file(key);
+    const [url] = await file.getSignedUrl({
+      action: 'read',
+      expires: Date.now() + expiresIn * 1000,
+    });
+    return url;
   }
 
   async deleteObject(key: string): Promise<void> {
-    await this.s3.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
-    this.logger.log(`Deleted S3 object: ${key}`);
+    await this.bucket.file(key).delete({ ignoreNotFound: true });
+    this.logger.log(`Deleted GCS object: ${key}`);
   }
 }

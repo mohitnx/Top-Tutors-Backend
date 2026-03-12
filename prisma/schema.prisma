@@ -32,6 +32,9 @@ model User {
   tutors               tutors?
   teachers             teachers?
   ai_chat_sessions     ai_chat_sessions[]
+  projects             projects[]
+  project_chat_sessions project_chat_sessions[]
+  daily_uploads        daily_uploads[]  @relation("uploadedDailyUploads")
 
   @@map("users")
 }
@@ -705,17 +708,19 @@ model teacher_sections {
 }
 
 model daily_uploads {
-  id         String       @id @default(uuid())
-  teacherId  String
-  sectionId  String
-  subject    Subject
-  uploadDate DateTime     @default(now())
-  status     UploadStatus @default(PENDING)
-  errorMsg   String?
-  createdAt  DateTime     @default(now())
-  updatedAt  DateTime     @updatedAt
+  id               String       @id @default(uuid())
+  teacherId        String?
+  uploadedByUserId String
+  sectionId        String
+  subject          Subject
+  uploadDate       DateTime     @default(now())
+  status           UploadStatus @default(PENDING)
+  errorMsg         String?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
 
-  teachers            teachers              @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  teachers            teachers?             @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  uploadedByUser      User                  @relation("uploadedDailyUploads", fields: [uploadedByUserId], references: [id])
   class_sections      class_sections        @relation(fields: [sectionId], references: [id])
   upload_images       upload_images[]
   extracted_questions extracted_questions[]
@@ -723,6 +728,7 @@ model daily_uploads {
 
   @@index([sectionId])
   @@index([status])
+  @@index([uploadedByUserId])
   @@map("daily_uploads")
 }
 
@@ -804,4 +810,92 @@ enum UploadStatus {
 enum QuestionRankType {
   MOST_ASKED
   BEST_ASKED
+}
+
+// ============ Student Projects (Personal AI Learning Spaces) ============
+
+enum ProjectResourceType {
+  PDF
+  IMAGE
+}
+
+model projects {
+  id              String    @id @default(uuid())
+  userId          String
+  title           String
+  description     String?
+  aiSystemPrompt  String?   // Custom persona / instructions for the AI
+  aiTemperature   Float     @default(0.5)
+  isArchived      Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  users                  User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project_resources      project_resources[]
+  project_chat_sessions  project_chat_sessions[]
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("projects")
+}
+
+model project_resources {
+  id            String              @id @default(uuid())
+  projectId     String
+  type          ProjectResourceType
+  title         String
+  url           String?             // S3 key or full URL
+  content       String?             // Extracted text (for AI context)
+  fileSize      Int?                // bytes
+  mimeType      String?
+  metadata      Json?               // page count, dimensions, etc.
+  createdAt     DateTime            @default(now())
+
+  projects projects @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("project_resources")
+}
+
+model project_chat_sessions {
+  id            String    @id @default(uuid())
+  projectId     String
+  userId        String
+  title         String?
+  lastMessageAt DateTime  @default(now())
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  projects         projects @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  users            User                          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project_messages project_messages[]
+
+  @@index([projectId])
+  @@index([userId])
+  @@index([lastMessageAt])
+  @@map("project_chat_sessions")
+}
+
+model project_messages {
+  id               String          @id @default(uuid())
+  sessionId        String
+  role             AIMessageRole   // USER, ASSISTANT, SYSTEM
+  content          String?
+  attachments      Json?           // Array of { url, name, type, size, mimeType }
+  isStreaming       Boolean         @default(false)
+  isComplete        Boolean         @default(true)
+  streamId         String?
+  hasError         Boolean         @default(false)
+  errorMessage     String?
+  feedback         AIFeedbackType?
+  promptTokens     Int?
+  completionTokens Int?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  project_chat_sessions project_chat_sessions @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([createdAt])
+  @@map("project_messages")
 }

@@ -28,10 +28,10 @@ export class DailyPackageController {
 
   @Post('upload')
   @UseGuards(RolesGuard)
-  @Roles('TEACHER')
+  @Roles('TEACHER', 'ADMINISTRATOR')
   @UseInterceptors(FilesInterceptor('files', 50))
   @ApiConsumes('multipart/form-data')
-  @ApiOperation({ summary: 'Upload batch question images (max 50) [TEACHER]' })
+  @ApiOperation({ summary: 'Upload batch question images (max 50) [TEACHER, ADMINISTRATOR]' })
   async upload(
     @UploadedFiles() files: Express.Multer.File[],
     @Body() dto: UploadQuestionsDto,
@@ -42,22 +42,29 @@ export class DailyPackageController {
     }
 
     const imageBuffers = files.map((f) => f.buffer);
-    return this.dailyPackageService.createUpload(user.id, dto.sectionId, dto.subject, imageBuffers);
+    return this.dailyPackageService.createUpload(
+      user.id,
+      user.role,
+      user.administeredSchoolId,
+      dto.sectionId,
+      dto.subject,
+      imageBuffers,
+    );
   }
 
   @Get('uploads')
   @UseGuards(RolesGuard)
-  @Roles('TEACHER')
-  @ApiOperation({ summary: 'List my uploads with status [TEACHER]' })
+  @Roles('TEACHER', 'ADMINISTRATOR')
+  @ApiOperation({ summary: 'List uploads with status [TEACHER, ADMINISTRATOR]' })
   async getMyUploads(@CurrentUser() user: any) {
-    return this.dailyPackageService.getTeacherUploads(user.id);
+    return this.dailyPackageService.getUploads(user.id, user.role, user.administeredSchoolId);
   }
 
   @Get('uploads/:id')
   @UseGuards(RolesGuard)
-  @Roles('TEACHER')
-  @ApiOperation({ summary: 'Get upload details and processing status [TEACHER]' })
+  @Roles('TEACHER', 'ADMINISTRATOR')
+  @ApiOperation({ summary: 'Get upload details and processing status [TEACHER, ADMINISTRATOR]' })
   async getUploadStatus(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any) {
-    return this.dailyPackageService.getUploadDetails(id, user.id);
+    return this.dailyPackageService.getUploadDetails(id, user.id, user.role, user.administeredSchoolId);
   }
 }

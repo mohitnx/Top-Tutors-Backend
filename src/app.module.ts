@@ -24,6 +24,9 @@ import { StorageModule } from './modules/storage/storage.module';
 import { TeachersModule } from './modules/teachers/teachers.module';
 import { ClassSectionsModule } from './modules/class-sections/class-sections.module';
 import { DailyPackageModule } from './modules/daily-package/daily-package.module';
+import { ProjectsModule } from './modules/projects/projects.module';
+import { PromptsModule } from './modules/prompts/prompts.module';
+import { LlmModule } from './modules/llm/llm.module';
 
 // Common
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -90,6 +93,12 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
     // Database
     PrismaModule,
 
+    // Prompt registry (global)
+    PromptsModule,
+
+    // LLM providers (global — Gemini, Anthropic, OpenAI, DeepSeek)
+    LlmModule,
+
     // Feature modules
     StorageModule,
     EmailModule,
@@ -103,6 +112,7 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
     ProfilesModule,
     GeminiChatModule,
     DailyPackageModule,
+    ProjectsModule,
   ],
   providers: [
     // Global exception filter

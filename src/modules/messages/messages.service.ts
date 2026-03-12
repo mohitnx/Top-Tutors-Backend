@@ -7,8 +7,8 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { PrismaService } from '../../prisma/prisma.service';
+import { LlmService } from '../llm/llm.service';
 import {
   SendTextMessageDto,
   ClassificationResult,
@@ -41,17 +41,12 @@ export interface ProcessingUpdate {
 @Injectable()
 export class MessagesService {
   private readonly logger = new Logger(MessagesService.name);
-  private genAI: GoogleGenerativeAI | null = null;
 
   constructor(
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
-  ) {
-    const apiKey = this.configService.get<string>('GEMINI_API_KEY');
-    if (apiKey) {
-      this.genAI = new GoogleGenerativeAI(apiKey.trim());
-    }
-  }
+    private readonly llm: LlmService,
+  ) {}
 
   /**
    * Send a text message - creates conversation if needed
@@ -981,81 +976,32 @@ export class MessagesService {
    * Classify message using Gemini with fallback models
    */
   async classifyMessage(text: string): Promise<ClassificationResult> {
-    if (!this.genAI) {
-      this.logger.warn('GEMINI_API_KEY not configured, using keyword-based classification');
+    try {
+      const result = await this.llm.generateFromPrompt('message-classification', { text });
+      const responseText = result.text;
+
+      if (!responseText) {
+        this.logger.warn('Empty response from LLM for classification');
+        return this.keywordBasedClassification(text);
+      }
+
+      const cleanedResponse = responseText.replace(/```json\n?|\n?```/g, '').trim();
+      const parsed = JSON.parse(cleanedResponse);
+
+      this.logger.log('Classification successful via LLM');
+
+      return {
+        transcription: text,
+        detectedLanguage: parsed.detectedLanguage || 'en',
+        subject: this.validateSubject(parsed.subject),
+        topic: parsed.topic || 'General Question',
+        keywords: Array.isArray(parsed.keywords) ? parsed.keywords : [],
+        urgency: this.validateUrgency(parsed.urgency),
+      };
+    } catch (error: any) {
+      this.logger.warn(`LLM classification failed: ${error.message}`);
       return this.keywordBasedClassification(text);
     }
-
-    const modelsToTry = ['gemini-pro-latest', 'gemini-2.5-pro','gemini-2.5-flash', 'gemini-flash-latest' ];
-
-    
-
-    const prompt = `You are an educational assistant. Analyze this student question and classify it.
-
-Student's question: "${text}"
-
-Respond with ONLY a valid JSON object (no markdown, no code blocks) in this exact format:
-{
-  "detectedLanguage": "en",
-  "subject": "MATHEMATICS",
-  "topic": "Brief topic description",
-  "keywords": ["keyword1", "keyword2", "keyword3"],
-  "urgency": "NORMAL"
-}
-
-IMPORTANT RULES:
-- subject MUST be EXACTLY one of these values: MATHEMATICS, PHYSICS, CHEMISTRY, BIOLOGY, ENGLISH, HISTORY, GEOGRAPHY, COMPUTER_SCIENCE, ECONOMICS, SOCIAL, HUMANITIES, ARTS, ACCOUNTING, GENERAL
-- For questions about computers, programming, coding, software, LLM, AI, machine learning, algorithms, data structures → use COMPUTER_SCIENCE
-- For questions about math, calculus, algebra, geometry, statistics → use MATHEMATICS
-- For questions about physics, mechanics, electricity, waves → use PHYSICS
-- For questions about chemistry, molecules, reactions, elements → use CHEMISTRY
-- For questions about biology, cells, organisms, genetics → use BIOLOGY
-- For questions about English, writing, grammar, literature → use ENGLISH
-- For questions about history, wars, civilizations, historical events → use HISTORY
-- For questions about geography, maps, countries, climate → use GEOGRAPHY
-- For questions about economics, markets, trade, macroeconomics → use ECONOMICS
-- For questions about social studies, sociology, psychology, economics → use SOCIAL
-- For questions about humanities, literature, philosophy, history → use HUMANITIES
-- For questions about arts, music, painting, sculpture → use ARTS
-- For questions about accounting, finance, bookkeeping → use ACCOUNTING
-- Only use GENERAL if the question doesn't fit any other category
-- urgency MUST be one of: LOW, NORMAL, HIGH, URGENT (HIGH if student mentions exam/test/deadline, URGENT if very immediate)
-- keywords should be 3-5 relevant terms
-- topic should be a brief 2-5 word description`;
-
-    for (const modelName of modelsToTry) {
-      try {
-        const model = this.genAI.getGenerativeModel({ model: modelName });
-        const result = await model.generateContent(prompt);
-        const responseText = result.response?.text?.();
-
-        if (!responseText) {
-          this.logger.warn(`Empty response from ${modelName} for classification`);
-          continue;
-        }
-
-        const cleanedResponse = responseText.replace(/```json\n?|\n?```/g, '').trim();
-        const parsed = JSON.parse(cleanedResponse);
-
-        this.logger.log(`Classification successful using model: ${modelName}`);
-        
-        return {
-          transcription: text,
-          detectedLanguage: parsed.detectedLanguage || 'en',
-          subject: this.validateSubject(parsed.subject),
-          topic: parsed.topic || 'General Question',
-          keywords: Array.isArray(parsed.keywords) ? parsed.keywords : [],
-          urgency: this.validateUrgency(parsed.urgency),
-        };
-      } catch (error: any) {
-        this.logger.warn(`Classification with ${modelName} failed: ${error.message}`);
-        continue;
-      }
-    }
-
-    // All models failed, use keyword-based classification
-    this.logger.warn('All Gemini models failed, using keyword-based classification');
-    return this.keywordBasedClassification(text);
   }
 
   /**
@@ -1281,34 +1227,12 @@ IMPORTANT RULES:
   }
 
   /**
-   * Transcribe audio using Gemini with fallback models
+   * Transcribe audio using LLM with fallback models
    */
   async transcribeAudio(file: Express.Multer.File): Promise<string> {
-    if (!this.genAI) {
-      // No API key - return placeholder
-      this.logger.warn('GEMINI_API_KEY not configured, returning placeholder transcription');
-      return '[Audio message - transcription unavailable]';
-    }
-
-    // Models that support audio transcription (in order of preference - Dec 2024)
-    // Try multiple variations as Google frequently changes model names
-    const modelsToTry = [
-      'models/gemini-1.5-flash',
-      'models/gemini-1.5-pro', 
-      'gemini-1.5-flash-latest',
-      'gemini-1.5-pro-latest',
-      'gemini-1.5-flash',
-      'gemini-1.5-pro',
-      'gemini-pro-vision',
-      'models/gemini-pro-vision',
-    ];
-
-    const base64Audio = file.buffer.toString('base64');
-    
     // Determine correct MIME type
     let mimeType = file.mimetype || 'audio/webm';
     if (mimeType === 'application/octet-stream') {
-      // Try to detect from filename
       const ext = file.originalname?.split('.').pop()?.toLowerCase();
       const mimeMap: Record<string, string> = {
         'webm': 'audio/webm',
@@ -1321,40 +1245,30 @@ IMPORTANT RULES:
       mimeType = mimeMap[ext || ''] || 'audio/webm';
     }
 
-    for (const modelName of modelsToTry) {
-      try {
-        const model = this.genAI.getGenerativeModel({ model: modelName });
-
-        const result = await model.generateContent([
+    try {
+      const result = await this.llm.generateFromPrompt('audio-transcription', undefined, {
+        userParts: [
           {
             inlineData: {
               mimeType,
-              data: base64Audio,
+              data: file.buffer.toString('base64'),
             },
           },
-          {
-            text: 'Transcribe this audio message. The user is likely a student asking for help with their studies. Return only the transcription text, nothing else. If you cannot understand the audio, return "UNABLE_TO_TRANSCRIBE".',
-          },
-        ]);
+        ],
+      });
 
-        const transcription = result.response?.text?.()?.trim();
-
-        if (!transcription || transcription === 'UNABLE_TO_TRANSCRIBE') {
-          this.logger.warn(`Model ${modelName} could not transcribe audio`);
-          continue;
-        }
-
-        this.logger.log(`Audio transcription successful using model: ${modelName}`);
-        return transcription;
-      } catch (error: any) {
-        this.logger.warn(`Audio transcription with ${modelName} failed: ${error.message}`);
-        continue;
+      const transcription = result.text.trim();
+      if (!transcription || transcription === 'UNABLE_TO_TRANSCRIBE') {
+        this.logger.warn('LLM could not transcribe audio');
+        return '[Audio message - transcription pending]';
       }
-    }
 
-    // All models failed - return placeholder so message can still be sent
-    this.logger.warn('All Gemini models failed for audio transcription, using placeholder');
-    return '[Audio message - transcription pending]';
+      this.logger.log('Audio transcription successful via LLM');
+      return transcription;
+    } catch (error: any) {
+      this.logger.warn(`Audio transcription failed: ${error.message}`);
+      return '[Audio message - transcription pending]';
+    }
   }
 
   /**

@@ -10,7 +10,13 @@ export class EmailService {
   constructor(
     private readonly mailer: MailerService,
     private readonly config: ConfigService,
-  ) {}
+  ) {
+    const smtpHost = config.get<string>('SMTP_HOST');
+    const smtpUser = config.get<string>('SMTP_USER');
+    if (!smtpHost || !smtpUser) {
+      this.logger.warn('SMTP_HOST or SMTP_USER is missing — emails (invitations, daily packages) will fail!');
+    }
+  }
 
   async sendInvitation(to: string, name: string, token: string, role: Role): Promise<void> {
     const frontendUrl = this.config.get<string>('FRONTEND_URL', 'http://localhost:5173');

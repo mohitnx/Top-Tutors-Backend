@@ -11,6 +11,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { GeminiChatService } from './gemini-chat.service';
 import { TutorSessionGateway } from './tutor-session.gateway';
+import { PromptService } from '../prompts/prompt.service';
 import { v4 as uuidv4 } from 'uuid';
 
 export interface TutorSessionSummary {
@@ -48,6 +49,7 @@ export class TutorSessionService {
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
     private readonly geminiChatService: GeminiChatService,
+    private readonly promptService: PromptService,
     @Optional() @Inject(TutorSessionGateway) private readonly tutorSessionGateway?: TutorSessionGateway,
   ) {
     this.dailyApiKey = this.configService.get<string>('DAILY_API_KEY');
@@ -216,25 +218,13 @@ export class TutorSessionService {
       .join('\n\n');
 
     try {
+      const resolved = this.promptService.resolve('conversation-analysis', {
+        conversationText: conversationText.slice(0, 10000),
+      });
+
       // Use the GeminiChatService's model detection
       const model = await (this.geminiChatService as any).getWorkingModel();
-
-      const prompt = `Analyze this student-AI conversation and provide:
-1. A comprehensive summary (2-3 paragraphs) explaining what the student is struggling with
-2. The main topic they need help with (concise, 5-10 words)
-3. The academic subject (one of: MATHEMATICS, PHYSICS, CHEMISTRY, BIOLOGY, ENGLISH, HISTORY, GEOGRAPHY, COMPUTER_SCIENCE, ECONOMICS, SOCIAL, HUMANITIES, ARTS, ACCOUNTING, GENERAL)
-4. Key keywords/concepts mentioned (up to 5)
-
-Conversation:
-${conversationText.slice(0, 10000)}
-
-Respond in JSON format:
-{
-  "summary": "detailed summary here",
-  "topic": "main topic",
-  "subject": "SUBJECT_NAME",
-  "keywords": ["keyword1", "keyword2"]
-}`;
+      const prompt = resolved.userPrompt!;
 
       const result = await model.generateContent(prompt);
       const responseText = result.response.text();

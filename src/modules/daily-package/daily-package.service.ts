@@ -21,42 +21,68 @@ export class DailyPackageService {
   ) {}
 
   async createUpload(
-    teacherUserId: string,
+    userId: string,
+    userRole: string,
+    administeredSchoolId: string | null,
     sectionId: string,
     subject: Subject,
     imageBuffers: Buffer[],
   ): Promise<{ uploadId: string; status: string }> {
-    const teacher = await this.prisma.teachers.findUnique({ where: { userId: teacherUserId } });
-    if (!teacher) throw new NotFoundException('Teacher profile not found');
+    let teacherId: string | null = null;
 
-    // Verify teacher is assigned to this section for this subject
-    const assignment = await this.prisma.teacher_sections.findFirst({
-      where: { teacherId: teacher.id, sectionId, subject },
-    });
-    if (!assignment) {
-      throw new ForbiddenException('You are not assigned to this section for this subject');
+    if (userRole === 'ADMINISTRATOR') {
+      // Administrator: verify section belongs to their school
+      if (!administeredSchoolId) {
+        throw new ForbiddenException('No school associated with this administrator');
+      }
+      const section = await this.prisma.class_sections.findUnique({ where: { id: sectionId } });
+      if (!section || section.schoolId !== administeredSchoolId) {
+        throw new ForbiddenException('This section does not belong to your school');
+      }
+    } else {
+      // Teacher: verify teacher profile and section assignment
+      const teacher = await this.prisma.teachers.findUnique({ where: { userId } });
+      if (!teacher) throw new NotFoundException('Teacher profile not found');
+
+      const assignment = await this.prisma.teacher_sections.findFirst({
+        where: { teacherId: teacher.id, sectionId, subject },
+      });
+      if (!assignment) {
+        throw new ForbiddenException('You are not assigned to this section for this subject');
+      }
+      teacherId = teacher.id;
     }
 
     // Create upload record
     const upload = await this.prisma.daily_uploads.create({
       data: {
-        teacherId: teacher.id,
+        teacherId,
+        uploadedByUserId: userId,
         sectionId,
         subject,
         status: UploadStatus.PENDING,
       },
     });
 
-    // Upload images to R2 and create image records
-    const imageRecords = await Promise.all(
-      imageBuffers.map(async (buf, i) => {
-        const key = `uploads/${upload.id}/${i}.jpg`;
-        const url = await this.storage.uploadBuffer(key, buf, 'image/jpeg');
-        return { uploadId: upload.id, imageUrl: url, order: i };
-      }),
-    );
+    // Upload images to S3 and create image records
+    try {
+      const imageRecords = await Promise.all(
+        imageBuffers.map(async (buf, i) => {
+          const key = `uploads/${upload.id}/${i}.jpg`;
+          const url = await this.storage.uploadBuffer(key, buf, 'image/jpeg');
+          return { uploadId: upload.id, imageUrl: url, order: i };
+        }),
+      );
 
-    await this.prisma.upload_images.createMany({ data: imageRecords });
+      await this.prisma.upload_images.createMany({ data: imageRecords });
+    } catch (err) {
+      this.logger.error(`Image upload to S3 failed for ${upload.id}: ${err.message}`);
+      await this.prisma.daily_uploads.update({
+        where: { id: upload.id },
+        data: { status: UploadStatus.FAILED, errorMsg: `Image upload failed: ${err.message}` },
+      });
+      throw new Error(`Failed to upload images to storage: ${err.message}`);
+    }
 
     // Fire-and-forget processing
     this.processUpload(upload.id, imageBuffers, subject).catch((err) => {
@@ -192,15 +218,31 @@ export class DailyPackageService {
     return this.storage.getSignedUrl(key);
   }
 
-  async getTeacherUploads(userId: string) {
-    const teacher = await this.prisma.teachers.findUnique({ where: { userId } });
-    if (!teacher) throw new NotFoundException('Teacher profile not found');
+  async getUploads(userId: string, userRole: string, administeredSchoolId: string | null) {
+    let where: any;
+
+    if (userRole === 'ADMINISTRATOR') {
+      if (!administeredSchoolId) {
+        throw new ForbiddenException('No school associated with this administrator');
+      }
+      // Show all uploads for sections in the administrator's school
+      const schoolSections = await this.prisma.class_sections.findMany({
+        where: { schoolId: administeredSchoolId },
+        select: { id: true },
+      });
+      where = { sectionId: { in: schoolSections.map((s) => s.id) } };
+    } else {
+      const teacher = await this.prisma.teachers.findUnique({ where: { userId } });
+      if (!teacher) throw new NotFoundException('Teacher profile not found');
+      where = { teacherId: teacher.id };
+    }
 
     return this.prisma.daily_uploads.findMany({
-      where: { teacherId: teacher.id },
+      where,
       include: {
         class_sections: { select: { id: true, name: true, grade: true } },
         daily_packages: { select: { id: true, pdfUrl: true, audioUrl: true, packageDate: true } },
+        uploadedByUser: { select: { id: true, name: true, role: true } },
         _count: { select: { upload_images: true, extracted_questions: true } },
       },
       orderBy: { createdAt: 'desc' },
@@ -208,25 +250,32 @@ export class DailyPackageService {
     });
   }
 
-  async getUploadDetails(uploadId: string, userId: string) {
-    const teacher = await this.prisma.teachers.findUnique({ where: { userId } });
-    if (!teacher) throw new NotFoundException('Teacher profile not found');
-
+  async getUploadDetails(uploadId: string, userId: string, userRole: string, administeredSchoolId: string | null) {
     const upload = await this.prisma.daily_uploads.findUnique({
       where: { id: uploadId },
       include: {
-        class_sections: { select: { id: true, name: true, grade: true } },
+        class_sections: { select: { id: true, name: true, grade: true, schoolId: true } },
         upload_images: { select: { imageUrl: true, order: true } },
         extracted_questions: {
           select: { text: true, frequency: true, rankType: true, rankPosition: true, shortAnswer: true },
           orderBy: { rankPosition: 'asc' },
         },
         daily_packages: { select: { id: true, pdfUrl: true, audioUrl: true, quizJson: true, packageDate: true } },
+        uploadedByUser: { select: { id: true, name: true, role: true } },
       },
     });
 
     if (!upload) throw new NotFoundException('Upload not found');
-    if (upload.teacherId !== teacher.id) throw new ForbiddenException('Access denied');
+
+    if (userRole === 'ADMINISTRATOR') {
+      if (upload.class_sections.schoolId !== administeredSchoolId) {
+        throw new ForbiddenException('Access denied');
+      }
+    } else {
+      const teacher = await this.prisma.teachers.findUnique({ where: { userId } });
+      if (!teacher) throw new NotFoundException('Teacher profile not found');
+      if (upload.teacherId !== teacher.id) throw new ForbiddenException('Access denied');
+    }
 
     return upload;
   }

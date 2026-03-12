@@ -6,9 +6,10 @@ import {
   InternalServerErrorException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { GoogleGenerativeAI, GenerativeModel, Content, Part } from '@google/generative-ai';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SystemInstructionsService } from '../ai/system-instructions/system-instructions.service';
+import { LlmService, LlmMessage, LlmContentPart, LlmStream } from '../llm';
+import { PromptService } from '../prompts/prompt.service';
 import {
   CreateSessionDto,
   UpdateSessionDto,
@@ -39,14 +40,8 @@ export interface StreamingResponse {
 @Injectable()
 export class GeminiChatService {
   private readonly logger = new Logger(GeminiChatService.name);
-  private genAI: GoogleGenerativeAI | null = null;
-  private model: GenerativeModel | null = null;
   private workingModelName: string | null = null;
-  
-  // Models to try in order of preference
-  private readonly modelsToTry = ['gemini-pro-latest', 'gemini-2.5-pro','gemini-2.5-flash', 'gemini-flash-latest' ]
 
-  
   // Track active streams for reconnection
   private activeStreams: Map<
     string,
@@ -54,7 +49,7 @@ export class GeminiChatService {
       content: string;
       complete: boolean;
       startedAtMs: number;
-      lastActivityAtMs: number; // last time we received a model chunk
+      lastActivityAtMs: number;
       cancelled?: boolean;
     }
   > = new Map();
@@ -63,59 +58,33 @@ export class GeminiChatService {
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
     private readonly systemInstructions: SystemInstructionsService,
-  ) {
-    // Use NEW_GEMINI_KEY as specified
-    const apiKey = this.configService.get<string>('NEW_GEMINI_KEY');
-    
-    if (apiKey) {
-      this.genAI = new GoogleGenerativeAI(apiKey.trim());
-      this.logger.log('Gemini AI SDK initialized, will detect working model on first request');
-    } else {
-      this.logger.warn('NEW_GEMINI_KEY not configured - AI chat will not work');
-    }
-  }
+    private readonly promptService: PromptService,
+    private readonly llm: LlmService,
+  ) {}
 
   /**
-   * Get or initialize a working model (tries multiple models)
+   * Get or detect a working model name (tries multiple models via LlmService)
    */
-  private async getWorkingModel(): Promise<GenerativeModel> {
-    if (!this.genAI) {
-      throw new InternalServerErrorException('Gemini AI not configured');
-    }
+  private async getWorkingModelName(): Promise<string> {
+    if (this.workingModelName) return this.workingModelName;
 
-    // If we already have a working model, return it
-    if (this.model && this.workingModelName) {
-      return this.model;
-    }
+    const resolved = this.llm.resolvePrompt('tutor-chat-single');
 
-    // Try each model until one works
-    for (const modelName of this.modelsToTry) {
+    for (const modelName of resolved.models) {
       try {
-        const systemPromptText = this.systemInstructions.getSystemPromptText({
-          key: 'gemini_chat_tutor',
-        });
-
-        const testModel = this.genAI.getGenerativeModel({
-          model: modelName,
-          systemInstruction: {
-            role: 'system',
-            parts: [{ text: systemPromptText }],
+        const testResult = await this.llm.generate(
+          this.llm.getDefaultProvider(),
+          [{ role: 'user', parts: [{ text: 'Hi' }] }],
+          {
+            model: modelName,
+            systemPrompt: resolved.systemPrompt || undefined,
+            generationConfig: resolved.generationConfig,
           },
-          generationConfig: {
-            temperature: 0.7,
-            topP: 0.95,
-            topK: 40,
-            maxOutputTokens: 8192,
-          },
-        });
-
-        // Test with a simple prompt
-        const testResult = await testModel.generateContent('Hi');
-        if (testResult.response?.text()) {
-          this.model = testModel;
+        );
+        if (testResult.text) {
           this.workingModelName = modelName;
-          this.logger.log(`✅ Using Gemini model: ${modelName}`);
-          return this.model;
+          this.logger.log(`Using model: ${modelName} (provider: ${this.llm.getDefaultProvider()})`);
+          return modelName;
         }
       } catch (error: any) {
         this.logger.warn(`Model ${modelName} failed: ${error.message}`);
@@ -123,7 +92,7 @@ export class GeminiChatService {
       }
     }
 
-    throw new InternalServerErrorException('No working Gemini model found. Please check your API key.');
+    throw new InternalServerErrorException('No working LLM model found. Check your API key.');
   }
 
   // ============ Session Management ============
@@ -303,13 +272,8 @@ export class GeminiChatService {
   }> {
     this.logger.log(`sendMessage called for user ${userId}, content: ${dto.content?.substring(0, 50)}...`);
 
-    if (!this.genAI) {
-      this.logger.error('Gemini AI not configured');
-      throw new InternalServerErrorException('Gemini AI not configured');
-    }
-
-    const model = await this.getWorkingModel();
-    this.logger.log(`Using model: ${model?.model}`);
+    const modelName = await this.getWorkingModelName();
+    this.logger.log(`Using model: ${modelName}`);
 
     // Get or create session
     let session: any;
@@ -343,20 +307,28 @@ export class GeminiChatService {
     const history = await this.getConversationHistory(session.id);
 
     // Build the prompt with attachments
-    const prompt = await this.buildPrompt(dto.content || '', attachments);
+    const promptParts = await this.buildPromptParts(dto.content || '', attachments);
 
     try {
-      this.logger.log(`Generating content with history length: ${history.length}, prompt length: ${prompt.length}`);
+      this.logger.log(`Generating content with history length: ${history.length}`);
+
+      const resolved = this.llm.resolvePrompt('tutor-chat-single');
+      const messages: LlmMessage[] = [
+        ...history,
+        { role: 'user', parts: promptParts },
+      ];
 
       // Generate response
-      const result = await model.generateContent({
-        contents: [...history, { role: 'user', parts: prompt }],
+      const result = await this.llm.generate(this.llm.getDefaultProvider(), messages, {
+        model: modelName,
+        systemPrompt: resolved.systemPrompt || undefined,
+        generationConfig: resolved.generationConfig,
       });
 
-      const responseText = result.response.text();
-      const usageMetadata = result.response.usageMetadata;
+      const responseText = result.text;
+      const usageMetadata = result.usage;
 
-      this.logger.log(`Generated response: ${responseText?.substring(0, 100)}..., tokens: ${usageMetadata?.promptTokenCount}/${usageMetadata?.candidatesTokenCount}`);
+      this.logger.log(`Generated response: ${responseText?.substring(0, 100)}..., tokens: ${usageMetadata?.promptTokens}/${usageMetadata?.completionTokens}`);
 
       // Create AI message
       const aiMessage = await this.prisma.ai_messages.create({
@@ -365,8 +337,8 @@ export class GeminiChatService {
           role: 'ASSISTANT',
           content: responseText,
           isComplete: true,
-          promptTokens: usageMetadata?.promptTokenCount,
-          completionTokens: usageMetadata?.candidatesTokenCount,
+          promptTokens: usageMetadata?.promptTokens,
+          completionTokens: usageMetadata?.completionTokens,
         },
       });
 
@@ -420,12 +392,8 @@ export class GeminiChatService {
     dto: SendMessageDto,
     attachments?: Express.Multer.File[],
   ): Promise<StreamingResponse> {
-    if (!this.genAI) {
-      throw new InternalServerErrorException('Gemini AI not configured');
-    }
-
     // Pre-validate model availability
-    await this.getWorkingModel();
+    await this.getWorkingModelName();
 
     const emitter = new EventEmitter();
 
@@ -534,12 +502,13 @@ export class GeminiChatService {
     let heartbeatTimer: NodeJS.Timeout | null = null;
 
     try {
-      // Get working model
-      const model = await this.getWorkingModel();
+      // Get working model and prompt config
+      const modelName = await this.getWorkingModelName();
+      const resolved = this.llm.resolvePrompt('tutor-chat-single');
 
-      // Get conversation history
+      // Get conversation history + build prompt
       const history = await this.getConversationHistory(sessionId, messageId);
-      const prompt = await this.buildPrompt(content, attachments);
+      const promptParts = await this.buildPromptParts(content, attachments);
 
       // Emit start
       emitter.emit('chunk', {
@@ -549,10 +518,16 @@ export class GeminiChatService {
         message: 'Started generating response',
       } as StreamChunk);
 
-      // Generate streaming response
-      const result = await model.generateContentStream({
-        contents: [...history, { role: 'user', parts: prompt }],
-      });
+      // Stream via LlmService
+      const llmStream = await this.llm.stream(
+        this.llm.getDefaultProvider(),
+        [...history, { role: 'user', parts: promptParts }],
+        {
+          model: modelName,
+          systemPrompt: resolved.systemPrompt || undefined,
+          generationConfig: resolved.generationConfig,
+        },
+      );
 
       let fullContent = '';
       const startedAtMs = Date.now();
@@ -577,41 +552,13 @@ export class GeminiChatService {
         } as StreamChunk);
       }, heartbeatIntervalMs);
 
-      // Iterate with an idle timeout so we never hang forever waiting for chunks
-      const iterator = (result.stream as any)[Symbol.asyncIterator]?.();
-      if (!iterator || typeof iterator.next !== 'function') {
-        throw new Error('Streaming iterator not available');
-      }
-
-      while (true) {
+      // Iterate the provider-agnostic stream with timeout
+      for await (const chunkText of llmStream) {
         const elapsedMs = Date.now() - startedAtMs;
         if (elapsedMs > totalTimeoutMs) {
           throw new Error('Generation timed out (took too long)');
         }
 
-        let nextResult: any;
-        try {
-          nextResult = await this.withTimeout(
-            iterator.next(),
-            idleTimeoutMs,
-            'No response from model (idle timeout)',
-          );
-        } catch (e) {
-          // Try to stop the iterator if possible
-          try {
-            if (typeof iterator.return === 'function') {
-              await iterator.return();
-            }
-          } catch {
-            // ignore
-          }
-          throw e;
-        }
-
-        if (nextResult?.done) break;
-
-        const chunk = nextResult.value;
-        const chunkText = chunk?.text ? chunk.text() : '';
         fullContent += chunkText;
 
         // Update stream tracking
@@ -632,12 +579,8 @@ export class GeminiChatService {
       }
 
       // Get final response for usage stats
-      const finalResponse = await this.withTimeout(
-        result.response,
-        idleTimeoutMs,
-        'No final response from model (idle timeout)',
-      );
-      const usageMetadata = finalResponse.usageMetadata;
+      const finalResult = await llmStream.getResponse();
+      const usageMetadata = finalResult.usage;
 
       // Update message in database
       await this.prisma.ai_messages.update({
@@ -646,8 +589,8 @@ export class GeminiChatService {
           content: fullContent,
           isStreaming: false,
           isComplete: true,
-          promptTokens: usageMetadata?.promptTokenCount,
-          completionTokens: usageMetadata?.candidatesTokenCount,
+          promptTokens: usageMetadata?.promptTokens,
+          completionTokens: usageMetadata?.completionTokens,
         },
       });
 
@@ -667,15 +610,15 @@ export class GeminiChatService {
         sessionId,
         fullContent,
         usage: {
-          promptTokens: usageMetadata?.promptTokenCount || 0,
-          completionTokens: usageMetadata?.candidatesTokenCount || 0,
+          promptTokens: usageMetadata?.promptTokens || 0,
+          completionTokens: usageMetadata?.completionTokens || 0,
         },
       } as StreamChunk);
 
       // Cleanup stream after a delay
       setTimeout(() => {
         this.activeStreams.delete(streamId);
-      }, 60000); // Keep for 1 minute for reconnection
+      }, 60000);
 
     } catch (error: any) {
       this.logger.error(`Streaming error: ${error.message}`);
@@ -841,10 +784,6 @@ export class GeminiChatService {
     file: Express.Multer.File,
     sessionId?: string,
   ): Promise<StreamingResponse> {
-    if (!this.genAI) {
-      throw new InternalServerErrorException('Gemini AI not configured');
-    }
-
     // Transcribe audio
     const transcription = await this.transcribeAudio(file);
 
@@ -886,41 +825,26 @@ export class GeminiChatService {
   }
 
   /**
-   * Transcribe audio using Gemini
+   * Transcribe audio using LLM
    */
   private async transcribeAudio(file: Express.Multer.File): Promise<string> {
-    if (!this.genAI) {
-      return '[Audio transcription unavailable]';
-    }
-
-    const base64Audio = file.buffer.toString('base64');
     let mimeType = file.mimetype || 'audio/webm';
-
     if (mimeType === 'application/octet-stream') {
       const ext = file.originalname?.split('.').pop()?.toLowerCase();
       const mimeMap: Record<string, string> = {
-        webm: 'audio/webm',
-        mp3: 'audio/mp3',
-        wav: 'audio/wav',
-        m4a: 'audio/m4a',
-        ogg: 'audio/ogg',
+        webm: 'audio/webm', mp3: 'audio/mp3', wav: 'audio/wav',
+        m4a: 'audio/m4a', ogg: 'audio/ogg',
       };
       mimeType = mimeMap[ext || ''] || 'audio/webm';
     }
 
     try {
-      const model = await this.getWorkingModel();
-      const result = await model.generateContent([
-        {
-          inlineData: { mimeType, data: base64Audio },
-        },
-        {
-          text: 'Transcribe this audio message accurately. Return only the transcription text.',
-        },
-      ]);
-
-      const transcription = result.response.text().trim();
-      return transcription || '[Could not transcribe audio]';
+      const result = await this.llm.generateFromPrompt('audio-transcription', undefined, {
+        userParts: [{
+          inlineData: { mimeType, data: file.buffer.toString('base64') },
+        }],
+      });
+      return result.text.trim() || '[Could not transcribe audio]';
     } catch (error: any) {
       this.logger.warn(`Audio transcription failed: ${error.message}`);
       return '[Audio transcription failed]';
@@ -1144,24 +1068,16 @@ export class GeminiChatService {
     return `/uploads/${folder}/${filename}`;
   }
 
-  private async buildPrompt(content: string, attachments?: Express.Multer.File[]): Promise<Part[]> {
-    const parts: Part[] = [];
+  private async buildPromptParts(content: string, attachments?: Express.Multer.File[]): Promise<LlmContentPart[]> {
+    const parts: LlmContentPart[] = [];
 
     // Add attachments first (images/PDFs)
     if (attachments) {
       for (const file of attachments) {
-        if (file.mimetype.startsWith('image/')) {
+        if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf') {
           parts.push({
             inlineData: {
               mimeType: file.mimetype,
-              data: file.buffer.toString('base64'),
-            },
-          });
-        } else if (file.mimetype === 'application/pdf') {
-          // For PDFs, we can send them as inline data
-          parts.push({
-            inlineData: {
-              mimeType: 'application/pdf',
               data: file.buffer.toString('base64'),
             },
           });
@@ -1177,7 +1093,7 @@ export class GeminiChatService {
     return parts;
   }
 
-  private async getConversationHistory(sessionId: string, excludeMessageId?: string): Promise<Content[]> {
+  private async getConversationHistory(sessionId: string, excludeMessageId?: string): Promise<LlmMessage[]> {
     const messages = await this.prisma.ai_messages.findMany({
       where: {
         sessionId,
@@ -1187,11 +1103,11 @@ export class GeminiChatService {
         ...(excludeMessageId && { id: { not: excludeMessageId } }),
       },
       orderBy: { createdAt: 'asc' },
-      take: 20, // Limit history for context window
+      take: 20,
     });
 
     return messages.map((msg: any) => ({
-      role: msg.role === 'USER' ? 'user' : 'model',
+      role: (msg.role === 'USER' ? 'user' : 'assistant') as 'user' | 'assistant',
       parts: [{ text: msg.content || '' }],
     }));
   }
@@ -1222,16 +1138,11 @@ export class GeminiChatService {
   }
 
   private async generateTitle(content: string): Promise<string> {
-    if (!this.genAI) {
-      return content.slice(0, 50) + (content.length > 50 ? '...' : '');
-    }
-
     try {
-      const model = await this.getWorkingModel();
-      const result = await model.generateContent(
-        `Generate a very short title (max 6 words) for this question. Return only the title, nothing else: "${content.slice(0, 200)}"`
-      );
-      return result.response.text().trim().slice(0, 100);
+      const result = await this.llm.generateFromPrompt('title-generation', {
+        content: content.slice(0, 200),
+      });
+      return result.text.trim().slice(0, 100);
     } catch {
       return content.slice(0, 50) + (content.length > 50 ? '...' : '');
     }
@@ -1239,22 +1150,19 @@ export class GeminiChatService {
 
   private async detectSubject(messages: { content?: string }[]): Promise<string> {
     const content = messages.map(m => m.content).filter(Boolean).join(' ');
-    
-    if (!this.genAI || !content) {
-      return 'GENERAL';
-    }
+    if (!content) return 'GENERAL';
 
     const validSubjects = [
       'MATHEMATICS', 'PHYSICS', 'CHEMISTRY', 'BIOLOGY', 'ENGLISH',
-      'HISTORY', 'GEOGRAPHY', 'COMPUTER_SCIENCE', 'ECONOMICS','SOCIAL', 'HUMANITIES', 'ARTS', 'ACCOUNTING', 'GENERAL',
+      'HISTORY', 'GEOGRAPHY', 'COMPUTER_SCIENCE', 'ECONOMICS', 'SOCIAL', 'HUMANITIES', 'ARTS', 'ACCOUNTING', 'GENERAL',
     ];
 
     try {
-      const model = await this.getWorkingModel();
-      const result = await model.generateContent(
-        `Classify this content into one of these subjects: ${validSubjects.join(', ')}. Return only the subject name: "${content.slice(0, 500)}"`
-      );
-      const detected = result.response.text().trim().toUpperCase();
+      const result = await this.llm.generateFromPrompt('subject-detection', {
+        content: content.slice(0, 500),
+        validSubjects: validSubjects.join(', '),
+      });
+      const detected = result.text.trim().toUpperCase();
       return validSubjects.includes(detected) ? detected : 'GENERAL';
     } catch {
       return 'GENERAL';
@@ -1387,7 +1295,7 @@ export class GeminiChatService {
     emitter: EventEmitter,
   ): Promise<void> {
     const history = await this.getConversationHistory(sessionId, messageId);
-    const promptParts = await this.buildPrompt(userContent, attachments);
+    const promptParts = await this.buildPromptParts(userContent, attachments);
 
     this.logger.log(`[COUNCIL] Starting GPAI-style multi-model council for session ${sessionId}`);
     this.logger.log(`[COUNCIL] Models: ${COUNCIL_MEMBERS.map((m) => `${m.label}=${m.modelName}`).join(', ')}`);
@@ -1512,36 +1420,35 @@ export class GeminiChatService {
 
   /**
    * Call a single council member using its DEDICATED model and config.
-   * Each member has its own Gemini model, temperature, and token limits.
+   * Each member has its own model, temperature, and token limits.
    */
   private async callCouncilMember(
     member: CouncilMember,
-    history: Content[],
-    promptParts: Part[],
+    history: LlmMessage[],
+    promptParts: LlmContentPart[],
     sessionSubject: string | null,
   ): Promise<string> {
-    if (!this.genAI) throw new Error('Gemini AI not configured');
-
     const systemPrompt = this.systemInstructions.getCouncilMemberPrompt(member, sessionSubject);
 
-    const memberModel = this.genAI.getGenerativeModel({
-      model: member.modelName,
-      systemInstruction: { role: 'system', parts: [{ text: systemPrompt }] },
-      generationConfig: {
-        temperature: member.config.temperature,
-        maxOutputTokens: member.config.maxOutputTokens,
-      },
-    });
+    const messages: LlmMessage[] = [
+      ...history,
+      { role: 'user', parts: promptParts },
+    ];
 
     const result = await this.withTimeout(
-      memberModel.generateContent({
-        contents: [...history, { role: 'user', parts: promptParts }],
+      this.llm.generate(this.llm.getDefaultProvider(), messages, {
+        model: member.modelName,
+        systemPrompt,
+        generationConfig: {
+          temperature: member.config.temperature,
+          maxOutputTokens: member.config.maxOutputTokens,
+        },
       }),
       45000,
       `Council member ${member.name} (${member.modelName}) timed out`,
     );
 
-    return result.response.text();
+    return result.text;
   }
 
   /**
@@ -1554,8 +1461,6 @@ export class GeminiChatService {
     userQuestion: string,
     sessionSubject: string | null,
   ): Promise<void> {
-    if (!this.genAI) return;
-
     const reviewPromises = COUNCIL_MEMBERS.map(async (member) => {
       try {
         const reviewSystemPrompt = this.systemInstructions.getCrossReviewPrompt(
@@ -1564,29 +1469,24 @@ export class GeminiChatService {
           userQuestion,
         );
 
-        const reviewModel = this.genAI!.getGenerativeModel({
-          model: member.modelName,
-          systemInstruction: { role: 'system', parts: [{ text: reviewSystemPrompt }] },
-          generationConfig: {
-            temperature: 0.3,
-            maxOutputTokens: member.config.reviewMaxTokens,
-          },
-        });
+        const messages: LlmMessage[] = [
+          { role: 'user', parts: [{ text: 'Please review the other experts\' responses.' }] },
+        ];
 
         const result = await this.withTimeout(
-          reviewModel.generateContent({
-            contents: [
-              {
-                role: 'user',
-                parts: [{ text: 'Please review the other experts\' responses.' }],
-              },
-            ],
+          this.llm.generate(this.llm.getDefaultProvider(), messages, {
+            model: member.modelName,
+            systemPrompt: reviewSystemPrompt,
+            generationConfig: {
+              temperature: 0.3,
+              maxOutputTokens: member.config.reviewMaxTokens,
+            },
           }),
           20000,
           `Cross-review by ${member.name} timed out`,
         );
 
-        const review = result.response.text().trim();
+        const review = result.text.trim();
         const memberResponse = memberResponses.find((r) => r.memberId === member.id);
         if (memberResponse) {
           memberResponse.review = review;
@@ -1616,17 +1516,6 @@ export class GeminiChatService {
     userContent: string,
     emitter: EventEmitter,
   ): Promise<void> {
-    if (!this.genAI) throw new Error('Gemini AI not configured');
-
-    const synthesisModel = this.genAI.getGenerativeModel({
-      model: SYNTHESIZER_MODEL,
-      systemInstruction: { role: 'system', parts: [{ text: synthesizerSystemPrompt }] },
-      generationConfig: {
-        temperature: SYNTHESIZER_CONFIG.temperature,
-        maxOutputTokens: SYNTHESIZER_CONFIG.maxOutputTokens,
-      },
-    });
-
     this.logger.log(
       `[COUNCIL] Synthesizer model: ${SYNTHESIZER_MODEL} — weaving ${memberResponses.length} expert perspectives...`,
     );
@@ -1637,42 +1526,36 @@ export class GeminiChatService {
       message: 'Synthesizing perspectives...',
     } as StreamChunk);
 
-    const result = await synthesisModel.generateContentStream({
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text: 'Please synthesize the perspectives above into a complete answer.' }],
-        },
-      ],
+    const messages: LlmMessage[] = [
+      { role: 'user', parts: [{ text: 'Please synthesize the perspectives above into a complete answer.' }] },
+    ];
+
+    const llmStream = await this.llm.stream(this.llm.getDefaultProvider(), messages, {
+      model: SYNTHESIZER_MODEL,
+      systemPrompt: synthesizerSystemPrompt,
+      generationConfig: {
+        temperature: SYNTHESIZER_CONFIG.temperature,
+        maxOutputTokens: SYNTHESIZER_CONFIG.maxOutputTokens,
+      },
     });
 
     let fullContent = '';
-    const iterator = (result.stream as any)[Symbol.asyncIterator]?.();
-    if (iterator && typeof iterator.next === 'function') {
-      while (true) {
-        const next: any = await this.withTimeout(
-          iterator.next(),
-          90000,
-          'Synthesis stream idle timeout',
-        );
-        if (next.done) break;
-        const chunkText = next.value?.text ? next.value.text() : '';
-        fullContent += chunkText;
+    for await (const chunkText of llmStream) {
+      fullContent += chunkText;
 
-        const streamData = this.activeStreams.get(streamId);
-        if (streamData) {
-          streamData.content = fullContent;
-          streamData.lastActivityAtMs = Date.now();
-        }
-
-        emitter.emit('chunk', {
-          type: 'chunk',
-          messageId,
-          sessionId,
-          content: chunkText,
-          fullContent,
-        } as StreamChunk);
+      const streamData = this.activeStreams.get(streamId);
+      if (streamData) {
+        streamData.content = fullContent;
+        streamData.lastActivityAtMs = Date.now();
       }
+
+      emitter.emit('chunk', {
+        type: 'chunk',
+        messageId,
+        sessionId,
+        content: chunkText,
+        fullContent,
+      } as StreamChunk);
     }
 
     // Strip metadata from council responses before persisting (clean for frontend)
