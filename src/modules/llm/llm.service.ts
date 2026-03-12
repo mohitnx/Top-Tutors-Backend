@@ -175,7 +175,7 @@ export class LlmService {
       this.logger.warn(`[${providerName}] All models failed — falling back to gemini`);
       try {
         return await this.getProvider('gemini').generate(messages, {
-          model: 'gemini-2.0-flash',
+          model: 'gemini-2.5-flash',
           systemPrompt: options.systemPrompt,
           generationConfig: options.generationConfig as any,
         });
@@ -223,7 +223,7 @@ export class LlmService {
       this.logger.warn(`[${providerName}] All stream models failed — falling back to gemini`);
       try {
         return await this.getProvider('gemini').stream(messages, {
-          model: 'gemini-2.0-flash',
+          model: 'gemini-2.5-flash',
           systemPrompt: options.systemPrompt,
           generationConfig: options.generationConfig as any,
         });
