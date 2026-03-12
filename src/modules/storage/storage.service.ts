@@ -5,10 +5,11 @@ import { Storage, Bucket } from '@google-cloud/storage';
 @Injectable()
 export class StorageService {
   private readonly logger = new Logger(StorageService.name);
-  private readonly storage: Storage;
-  private readonly bucket: Bucket;
+  private readonly storage: Storage | null = null;
+  private readonly bucket: Bucket | null = null;
   private readonly bucketName: string;
   private readonly publicUrl: string | undefined;
+  private readonly enabled: boolean;
 
   constructor(private readonly config: ConfigService) {
     const projectId = config.get<string>('GCS_PROJECT_ID', '');
@@ -17,7 +18,9 @@ export class StorageService {
     this.publicUrl = config.get<string>('GCS_PUBLIC_URL');
 
     if (!this.bucketName) {
-      this.logger.error('GCS_BUCKET is missing — file uploads will fail!');
+      this.logger.warn('GCS_BUCKET is missing — StorageService disabled, file uploads will fail');
+      this.enabled = false;
+      return;
     }
 
     // Supports both key-file auth (local dev) and Application Default Credentials (Cloud Run/GKE)
@@ -27,9 +30,19 @@ export class StorageService {
 
     this.storage = new Storage(storageOptions);
     this.bucket = this.storage.bucket(this.bucketName);
+    this.enabled = true;
+    this.logger.log('StorageService initialized with bucket: ' + this.bucketName);
+  }
+
+  private assertEnabled(): asserts this is { bucket: Bucket; storage: Storage } {
+    if (!this.enabled || !this.bucket) {
+      this.logger.error('StorageService called but GCS is not configured');
+      throw new Error('Cloud Storage is not configured — set GCS_BUCKET env var');
+    }
   }
 
   async uploadBuffer(key: string, buffer: Buffer, mimeType: string): Promise<string> {
+    this.assertEnabled();
     const file = this.bucket.file(key);
     await file.save(buffer, {
       contentType: mimeType,
@@ -43,6 +56,7 @@ export class StorageService {
   }
 
   async getSignedUrl(key: string, expiresIn = 3600): Promise<string> {
+    this.assertEnabled();
     const file = this.bucket.file(key);
     const [url] = await file.getSignedUrl({
       action: 'read',
@@ -52,6 +66,7 @@ export class StorageService {
   }
 
   async deleteObject(key: string): Promise<void> {
+    this.assertEnabled();
     await this.bucket.file(key).delete({ ignoreNotFound: true });
     this.logger.log(`Deleted GCS object: ${key}`);
   }
