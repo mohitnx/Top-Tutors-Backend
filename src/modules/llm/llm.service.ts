@@ -36,9 +36,15 @@ export class LlmService {
     this.providers.set('openai', openai);
     this.providers.set('deepseek', deepseek);
 
-    // Default provider from env (fallback to gemini)
+    // Default provider: prefer anthropic if available, then env setting, then gemini
     const envProvider = this.config.get<string>('LLM_PROVIDER', 'gemini') as LlmProvider;
-    this.defaultProvider = this.providers.has(envProvider) ? envProvider : 'gemini';
+    if (anthropic.isAvailable()) {
+      this.defaultProvider = 'anthropic';
+    } else if (this.providers.get(envProvider)?.isAvailable()) {
+      this.defaultProvider = envProvider;
+    } else {
+      this.defaultProvider = 'gemini';
+    }
 
     const available = Array.from(this.providers.entries())
       .filter(([, p]) => p.isAvailable())
@@ -164,6 +170,20 @@ export class LlmService {
       }
     }
 
+    // Cross-provider fallback: try gemini if primary provider failed
+    if (providerName !== 'gemini' && this.isProviderAvailable('gemini')) {
+      this.logger.warn(`[${providerName}] All models failed — falling back to gemini`);
+      try {
+        return await this.getProvider('gemini').generate(messages, {
+          model: 'gemini-2.0-flash',
+          systemPrompt: options.systemPrompt,
+          generationConfig: options.generationConfig as any,
+        });
+      } catch (fallbackError: any) {
+        this.logger.error(`[gemini] Fallback also failed: ${fallbackError.message}`);
+      }
+    }
+
     throw new Error(
       `All models failed for provider ${providerName}: [${options.models.join(', ')}]`,
     );
@@ -195,6 +215,20 @@ export class LlmService {
       } catch (error: any) {
         this.logger.warn(`[${providerName}] Stream model ${model} failed: ${error.message}`);
         continue;
+      }
+    }
+
+    // Cross-provider fallback: try gemini if primary provider failed
+    if (providerName !== 'gemini' && this.isProviderAvailable('gemini')) {
+      this.logger.warn(`[${providerName}] All stream models failed — falling back to gemini`);
+      try {
+        return await this.getProvider('gemini').stream(messages, {
+          model: 'gemini-2.0-flash',
+          systemPrompt: options.systemPrompt,
+          generationConfig: options.generationConfig as any,
+        });
+      } catch (fallbackError: any) {
+        this.logger.error(`[gemini] Stream fallback also failed: ${fallbackError.message}`);
       }
     }
 
