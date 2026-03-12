@@ -34,16 +34,16 @@ export class StorageService {
     this.logger.log('StorageService initialized with bucket: ' + this.bucketName);
   }
 
-  private assertEnabled(): asserts this is { bucket: Bucket; storage: Storage } {
+  private getBucket(): Bucket {
     if (!this.enabled || !this.bucket) {
       this.logger.error('StorageService called but GCS is not configured');
       throw new Error('Cloud Storage is not configured — set GCS_BUCKET env var');
     }
+    return this.bucket;
   }
 
   async uploadBuffer(key: string, buffer: Buffer, mimeType: string): Promise<string> {
-    this.assertEnabled();
-    const file = this.bucket.file(key);
+    const file = this.getBucket().file(key);
     await file.save(buffer, {
       contentType: mimeType,
       resumable: false,
@@ -56,8 +56,7 @@ export class StorageService {
   }
 
   async getSignedUrl(key: string, expiresIn = 3600): Promise<string> {
-    this.assertEnabled();
-    const file = this.bucket.file(key);
+    const file = this.getBucket().file(key);
     const [url] = await file.getSignedUrl({
       action: 'read',
       expires: Date.now() + expiresIn * 1000,
@@ -66,8 +65,7 @@ export class StorageService {
   }
 
   async deleteObject(key: string): Promise<void> {
-    this.assertEnabled();
-    await this.bucket.file(key).delete({ ignoreNotFound: true });
+    await this.getBucket().file(key).delete({ ignoreNotFound: true });
     this.logger.log(`Deleted GCS object: ${key}`);
   }
 }
