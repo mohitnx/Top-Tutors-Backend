@@ -329,11 +329,12 @@ export class GeminiChatService {
         { role: 'user', parts: promptParts },
       ];
 
-      // Generate response
+      // Generate response (with web search for real-time info)
       const result = await this.llm.generate(this.getActiveProvider(), messages, {
         model: modelName,
         systemPrompt: resolved.systemPrompt || undefined,
         generationConfig: resolved.generationConfig,
+        webSearch: true,
       });
 
       const responseText = result.text;
@@ -529,7 +530,7 @@ export class GeminiChatService {
         message: 'Started generating response',
       } as StreamChunk);
 
-      // Stream via LlmService
+      // Stream via LlmService (with web search for real-time info)
       const llmStream = await this.llm.stream(
         this.getActiveProvider(),
         [...history, { role: 'user', parts: promptParts }],
@@ -537,6 +538,7 @@ export class GeminiChatService {
           model: modelName,
           systemPrompt: resolved.systemPrompt || undefined,
           generationConfig: resolved.generationConfig,
+          webSearch: true,
         },
       );
 

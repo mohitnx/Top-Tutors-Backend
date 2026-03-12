@@ -46,6 +46,9 @@ export class AnthropicProvider implements ILlmProvider {
       ...(options.generationConfig?.topP !== undefined && {
         top_p: options.generationConfig.topP,
       }),
+      ...(options.webSearch && {
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 } as any],
+      }),
       messages: anthropicMessages,
     });
 
@@ -77,6 +80,9 @@ export class AnthropicProvider implements ILlmProvider {
       }),
       ...(options.generationConfig?.topP !== undefined && {
         top_p: options.generationConfig.topP,
+      }),
+      ...(options.webSearch && {
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 } as any],
       }),
       messages: anthropicMessages,
     });

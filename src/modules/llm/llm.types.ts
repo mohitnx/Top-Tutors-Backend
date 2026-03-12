@@ -26,6 +26,8 @@ export interface LlmCallOptions {
   model: string;
   systemPrompt?: string;
   generationConfig?: GenerationConfig;
+  /** Enable web search grounding — LLM can fetch real-time info from the internet */
+  webSearch?: boolean;
 }
 
 /**

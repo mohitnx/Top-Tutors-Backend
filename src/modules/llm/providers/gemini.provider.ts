@@ -125,6 +125,11 @@ export class GeminiProvider implements ILlmProvider {
       };
     }
 
+    // Enable Google Search grounding for real-time information
+    if (options.webSearch) {
+      modelOptions.tools = [{ googleSearch: {} } as any];
+    }
+
     return this.genAI.getGenerativeModel(modelOptions);
   }
 
