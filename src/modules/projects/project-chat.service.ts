@@ -1594,7 +1594,8 @@ export class ProjectChatService {
     const parts: string[] = [
       '[SAP REPORT GENERATION CONTEXT]\n',
       'Generate a report following the EXACT structure, tone, formatting, and level of detail of the demo report below.',
-      'Replace the demo data with real data from the uploaded study materials / questions.\n',
+      'Replace the demo data with real data from the uploaded study materials / questions.',
+      'For learning streaks specifically: if no streak data is provided, keep the demo streak values as realistic placeholders.\n',
     ];
 
     const isTeacher = /teacher/i.test(msg);

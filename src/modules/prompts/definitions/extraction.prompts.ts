@@ -37,10 +37,10 @@ export const extractionPrompts: PromptDefinition[] = [
       temperature: 0.1,
       maxOutputTokens: 8192,
     },
-    models: ['gemini-2.5-flash', 'gemini-1.5-flash'],
+    models: ['gemini-2.5-pro', 'gemini-2.5-flash'],
     providerModels: {
       openai: ['gpt-4o', 'gpt-4o-mini'],
-      anthropic: ['claude-sonnet-4-20250514'],
+      anthropic: ['claude-opus-4-6', 'claude-sonnet-4-20250514'],
     },
     outputFormat: 'text',
     variables: [],

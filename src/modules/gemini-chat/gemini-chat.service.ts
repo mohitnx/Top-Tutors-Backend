@@ -368,7 +368,10 @@ export class GeminiChatService {
           systemPrompt += `\n\n[Project: "${project.title}"]`;
         }
 
-
+        // SAP-specific system instructions
+        if (isSap) {
+          systemPrompt += '\n\nThis is a SAP (School Assessment & Performance) project. When the user asks to generate a report, a demo report will be injected into the prompt — follow its exact structure, tone, and formatting. Replace demo data with real data from uploaded materials.';
+        }
 
         // Inject study materials context
         const projectContext = await this.projectsService.getResourceContext(dto.projectId);
@@ -672,7 +675,10 @@ export class GeminiChatService {
           systemPrompt += `\n\n[Project: "${project.title}"]`;
         }
 
-
+        // SAP-specific system instructions
+        if (isSap) {
+          systemPrompt += '\n\nThis is a SAP (School Assessment & Performance) project. When the user asks to generate a report, a demo report will be injected into the prompt — follow its exact structure, tone, and formatting. Replace demo data with real data from uploaded materials.';
+        }
 
         // Inject study materials context
         const projectContext = await this.projectsService.getResourceContext(options.projectId);
@@ -1236,7 +1242,8 @@ export class GeminiChatService {
     const parts: string[] = [
       '[SAP REPORT GENERATION CONTEXT]\n',
       'Generate a report following the EXACT structure, tone, formatting, and level of detail of the demo report below.',
-      'Replace the demo data with real data from the uploaded study materials / questions.\n',
+      'Replace the demo data with real data from the uploaded study materials / questions.',
+      'For learning streaks specifically: if no streak data is provided, keep the demo streak values as realistic placeholders.\n',
     ];
 
     const isTeacher = /teacher/i.test(msg);
