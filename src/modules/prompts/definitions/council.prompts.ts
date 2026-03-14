@@ -75,7 +75,7 @@ export const councilPrompts: PromptDefinition[] = [
     models: ['gemini-2.5-flash'],
     providerModels: {
       openai: ['gpt-4o-mini'],
-      anthropic: ['claude-haiku-4-5-20251001'],
+      anthropic: ['claude-sonnet-4-20250514'],
     },
     outputFormat: 'text',
     variables: ['subjectLine'],
@@ -116,7 +116,7 @@ export const councilPrompts: PromptDefinition[] = [
     models: ['gemini-2.5-flash'],
     providerModels: {
       openai: ['gpt-4o-mini'],
-      anthropic: ['claude-haiku-4-5-20251001'],
+      anthropic: ['claude-sonnet-4-20250514'],
     },
     outputFormat: 'text',
     variables: ['subjectLine'],
@@ -135,7 +135,7 @@ export const councilPrompts: PromptDefinition[] = [
     models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash'],
     providerModels: {
       openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4o-mini'],
-      anthropic: ['claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001', 'claude-haiku-4-5-20251001'],
+      anthropic: ['claude-sonnet-4-20250514', 'claude-sonnet-4-20250514', 'claude-sonnet-4-20250514'],
     },
     outputFormat: 'text',
     variables: [],

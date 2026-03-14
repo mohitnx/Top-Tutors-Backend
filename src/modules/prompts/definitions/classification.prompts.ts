@@ -15,7 +15,7 @@ export const classificationPrompts: PromptDefinition[] = [
     models: ['gemini-2.5-flash', 'gemini-flash-latest'],
     providerModels: {
       openai: ['gpt-4o-mini'],
-      anthropic: ['claude-haiku-4-5-20251001'],
+      anthropic: ['claude-sonnet-4-20250514'],
     },
     outputFormat: 'text',
     variables: ['content', 'validSubjects'],
@@ -66,7 +66,7 @@ IMPORTANT RULES:
     models: ['gemini-2.5-flash', 'gemini-flash-latest'],
     providerModels: {
       openai: ['gpt-4o-mini'],
-      anthropic: ['claude-haiku-4-5-20251001'],
+      anthropic: ['claude-sonnet-4-20250514'],
     },
     outputFormat: 'json',
     variables: ['text'],

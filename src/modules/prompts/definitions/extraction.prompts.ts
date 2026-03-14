@@ -20,7 +20,7 @@ export const extractionPrompts: PromptDefinition[] = [
     models: ['gemini-2.5-flash', 'gemini-1.5-flash'],
     providerModels: {
       openai: ['gpt-4o', 'gpt-4o-mini'],
-      anthropic: ['claude-sonnet-4-20250514'],
+      anthropic: ['claude-opus-4-6', 'claude-sonnet-4-20250514'],
     },
     outputFormat: 'text',
     variables: [],

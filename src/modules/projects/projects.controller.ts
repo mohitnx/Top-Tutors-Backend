@@ -579,4 +579,27 @@ export class ProjectsController {
       this.projectsGateway.emitCouncilSynthesisStart(userId, result.sessionId, data);
     });
   }
+
+  // ── SAP Report PDF Download (fallback when GCS is unavailable) ──
+
+  @Get('sap-report/:cacheKey/download')
+  @ApiOperation({ summary: 'Download a cached SAP report PDF' })
+  @ApiParam({ name: 'cacheKey', description: 'PDF cache key' })
+  @ApiResponse({ status: 200, description: 'PDF file' })
+  async downloadSapReport(
+    @Param('cacheKey') cacheKey: string,
+    @Res() res: Response,
+  ) {
+    const cached = this.projectChatService.getCachedPdf(cacheKey);
+    if (!cached) {
+      res.status(404).json({ message: 'Report expired or not found. Please generate again.' });
+      return;
+    }
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${cached.filename}"`,
+      'Content-Length': cached.buffer.length.toString(),
+    });
+    res.send(cached.buffer);
+  }
 }

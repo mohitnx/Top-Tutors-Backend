@@ -118,7 +118,7 @@ export const chatPrompts: PromptDefinition[] = [
     models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-flash-latest'],
     providerModels: {
       openai: ['gpt-4o', 'gpt-4o-mini'],
-      anthropic: ['claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001'],
+      anthropic: ['claude-sonnet-4-20250514'],
     },
     outputFormat: 'streaming-markdown',
     variables: ['subject', 'userRole'],
@@ -163,7 +163,7 @@ export const chatPrompts: PromptDefinition[] = [
     models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-flash-latest'],
     providerModels: {
       openai: ['gpt-4o', 'gpt-4o-mini'],
-      anthropic: ['claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001'],
+      anthropic: ['claude-sonnet-4-20250514'],
     },
     outputFormat: 'streaming-markdown',
     variables: ['title', 'description', 'aiSystemPrompt'],
@@ -239,7 +239,7 @@ export const chatPrompts: PromptDefinition[] = [
     models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-flash-latest'],
     providerModels: {
       openai: ['gpt-4o', 'gpt-4o-mini'],
-      anthropic: ['claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001'],
+      anthropic: ['claude-sonnet-4-20250514'],
     },
     outputFormat: 'streaming-markdown',
     variables: ['subject', 'userRole'],
@@ -328,7 +328,7 @@ export const chatPrompts: PromptDefinition[] = [
     models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-flash-latest'],
     providerModels: {
       openai: ['gpt-4o', 'gpt-4o-mini'],
-      anthropic: ['claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001'],
+      anthropic: ['claude-sonnet-4-20250514'],
     },
     outputFormat: 'streaming-markdown',
     variables: ['subject', 'userRole'],

@@ -72,6 +72,10 @@ export class GeminiChatService {
     }
   > = new Map();
 
+  // Temporary in-memory PDF cache for SAP reports (auto-expires after 30 min)
+  private pdfCache: Map<string, { buffer: Buffer; filename: string; expiresAt: number }> = new Map();
+
+
   constructor(
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
@@ -347,7 +351,7 @@ export class GeminiChatService {
           ? 'deep-research' as const
           : 'tutor-chat-single' as const;
 
-      const provider = this.getProviderForTask(task);
+      let provider = this.getProviderForTask(task);
       const resolved = this.llm.resolvePrompt(promptId, undefined, provider);
       let systemPrompt = resolved.systemPrompt || '';
 
@@ -368,9 +372,9 @@ export class GeminiChatService {
           systemPrompt += `\n\n[Project: "${project.title}"]`;
         }
 
-        // SAP-specific system instructions
+        // SAP-specific system instructions — always inject when SAP project is attached
         if (isSap) {
-          systemPrompt += '\n\nThis is a SAP (School Assessment & Performance) project. When the user asks to generate a report, a demo report will be injected into the prompt — follow its exact structure, tone, and formatting. Replace demo data with real data from uploaded materials.';
+          systemPrompt += this.getSapSystemInstructions();
         }
 
         // Inject study materials context
@@ -385,15 +389,8 @@ export class GeminiChatService {
         projectTemperature = project.aiTemperature;
       }
 
-      // SAP: inject the relevant report template + demo into user prompt when report requested
-      let isSapReport = false;
-      if (isSap && dto.content) {
-        const sapContext = this.getSapReportContext(dto.content);
-        if (sapContext) {
-          promptParts.unshift({ text: sapContext });
-          isSapReport = true;
-        }
-      }
+      // SAP: always flag — the LLM decides whether to generate a report
+      const isSapReport = isSap;
 
       const messages: LlmMessage[] = [
         ...history,
@@ -403,12 +400,20 @@ export class GeminiChatService {
       // Generate response with automatic fallback across providers (web search enabled)
       const genConfig = { ...resolved.generationConfig };
       if (projectTemperature !== undefined) genConfig.temperature = projectTemperature;
-      // SAP reports need more output tokens
-      if (isSap) genConfig.maxOutputTokens = 16384;
+      // SAP: use best models + more output tokens
+      let activeModels = resolved.models;
+      if (isSap) {
+        genConfig.maxOutputTokens = 16384;
+        if (this.llm.isProviderAvailable('anthropic')) {
+          activeModels = ['claude-opus-4-6', 'claude-sonnet-4-20250514'];
+          provider = 'anthropic';
+          delete genConfig.topP;
+        }
+      }
       const result = await this.llm.generateWithFallback(messages, {
         systemPrompt: systemPrompt || undefined,
         generationConfig: genConfig,
-        models: resolved.models,
+        models: activeModels,
         provider,
         webSearch: true,
       });
@@ -434,22 +439,44 @@ export class GeminiChatService {
 
       // SAP Report: auto-generate PDF and upload to GCS
       let reportDownload: StreamChunk['reportDownload'] | undefined;
-      if (isSapReport && responseText && this.looksLikeReport(responseText) && dto.projectId) {
+      const isActualReport = isSapReport && responseText && this.looksLikeReport(responseText) && dto.projectId;
+      if (isActualReport) {
         try {
-          const pdfBuffer = await this.projectChatService.renderMarkdownToPdf(responseText, 'SAP');
+          const reportMarkdown = this.stripPreamble(responseText);
+          const pdfBuffer = await this.projectChatService.renderMarkdownToPdf(reportMarkdown, 'SAP');
           const dateStr = new Date().toISOString().slice(0, 10);
           const filename = `SAP-Report-${dateStr}.pdf`;
-          const gcsKey = `sap-reports/${dto.projectId}/${aiMessage.id}/${filename}`;
-          const downloadUrl = await this.storage.uploadBuffer(gcsKey, pdfBuffer, 'application/pdf');
-          reportDownload = { downloadUrl, filename, messageId: aiMessage.id };
-          this.logger.log(`SAP report PDF auto-generated and uploaded: ${gcsKey}`);
+
+          try {
+            const gcsKey = `sap-reports/${dto.projectId}/${aiMessage.id}/${filename}`;
+            const downloadUrl = await this.storage.uploadBuffer(gcsKey, pdfBuffer, 'application/pdf');
+            reportDownload = { downloadUrl, filename, messageId: aiMessage.id };
+            this.logger.log(`SAP report PDF uploaded to GCS: ${gcsKey}`);
+          } catch (uploadError: any) {
+            this.logger.warn(`GCS upload failed, serving from backend cache: ${uploadError.message}`);
+            const cacheKey = this.cachePdf(pdfBuffer, filename);
+            const downloadUrl = `/api/v1/gemini-chat/sap-report/${cacheKey}/download`;
+            reportDownload = { downloadUrl, filename, messageId: aiMessage.id };
+          }
         } catch (pdfError: any) {
-          this.logger.error(`Failed to auto-generate SAP report PDF: ${pdfError.message}`);
+          this.logger.error(`Failed to generate SAP report PDF: ${pdfError.message}`);
         }
       }
 
+      // For SAP reports: replace chat content with brief message (full report is in DB + PDF)
+      if (isActualReport && reportDownload) {
+        await this.prisma.ai_messages.update({
+          where: { id: aiMessage.id },
+          data: { content: 'Your SAP report has been generated. Download it using the button below.' },
+        });
+        aiMessage.content = 'Your SAP report has been generated. Download it using the button below.';
+      }
+
       // Update session
-      await this.updateSessionAfterMessage(session.id, dto.content || '', responseText);
+      const chatContent = isActualReport && reportDownload
+        ? 'Your SAP report has been generated. Download it using the button below.'
+        : responseText;
+      await this.updateSessionAfterMessage(session.id, dto.content || '', chatContent);
 
       const updatedSession = await this.prisma.ai_chat_sessions.findUnique({
         where: { id: session.id },
@@ -651,7 +678,7 @@ export class GeminiChatService {
           ? 'deep-research' as const
           : 'tutor-chat-single' as const;
 
-      const provider = this.getProviderForTask(task);
+      let provider = this.getProviderForTask(task);
       const resolved = this.llm.resolvePrompt(promptId, undefined, provider);
       let systemPrompt = resolved.systemPrompt || '';
 
@@ -675,9 +702,9 @@ export class GeminiChatService {
           systemPrompt += `\n\n[Project: "${project.title}"]`;
         }
 
-        // SAP-specific system instructions
+        // SAP-specific system instructions — always inject when SAP project is attached
         if (isSap) {
-          systemPrompt += '\n\nThis is a SAP (School Assessment & Performance) project. When the user asks to generate a report, a demo report will be injected into the prompt — follow its exact structure, tone, and formatting. Replace demo data with real data from uploaded materials.';
+          systemPrompt += this.getSapSystemInstructions();
         }
 
         // Inject study materials context
@@ -694,9 +721,20 @@ export class GeminiChatService {
           resolved.generationConfig.temperature = project.aiTemperature;
         }
 
-        // SAP reports need more output tokens
-        if (isSap && resolved.generationConfig) {
-          resolved.generationConfig.maxOutputTokens = 16384;
+        // SAP: use best models + more output tokens
+        if (isSap) {
+          if (resolved.generationConfig) {
+            resolved.generationConfig.maxOutputTokens = 16384;
+          }
+          // Override to best available models for SAP report generation
+          if (this.llm.isProviderAvailable('anthropic')) {
+            resolved.models = ['claude-opus-4-6', 'claude-sonnet-4-20250514'];
+            provider = 'anthropic';
+            // Anthropic can't have both temperature and topP — drop topP
+            if (resolved.generationConfig?.topP !== undefined) {
+              delete resolved.generationConfig.topP;
+            }
+          }
         }
       }
 
@@ -709,15 +747,8 @@ export class GeminiChatService {
         promptParts.push({ text: '(continue)' });
       }
 
-      // SAP: inject the relevant report template + demo into user prompt when report requested
-      let isSapReport = false;
-      if (isSap && content) {
-        const sapContext = this.getSapReportContext(content);
-        if (sapContext) {
-          promptParts.unshift({ text: sapContext });
-          isSapReport = true;
-        }
-      }
+      // SAP: always flag SAP projects — the LLM decides whether to generate a report
+      const isSapReport = isSap;
 
       // ── Mode detection & thinking trace ──
       const mode: StreamChunk['mode'] = options?.deepThink
@@ -895,21 +926,78 @@ export class GeminiChatService {
           streamData.lastActivityAtMs = Date.now();
         }
 
-        // Emit chunk
-        emitter.emit('chunk', {
-          type: 'chunk',
-          messageId,
-          sessionId,
-          content: chunkText,
-          fullContent,
-        } as StreamChunk);
+        // SAP: suppress content chunks — PDF will be generated at the end
+        // Non-SAP: stream content normally
+        if (!isSapReport) {
+          emitter.emit('chunk', {
+            type: 'chunk',
+            messageId,
+            sessionId,
+            content: chunkText,
+            fullContent,
+          } as StreamChunk);
+        }
       }
 
       // Get final response for usage stats
       const finalResult = await llmStream.getResponse();
       const usageMetadata = finalResult.usage;
 
-      // Update message in database
+      // SAP: if content was suppressed but it's NOT a report, emit the full content now
+      let reportDownload: StreamChunk['reportDownload'] | undefined;
+      const isActualReport = isSapReport && this.looksLikeReport(fullContent) && options?.projectId;
+      if (isSapReport && !isActualReport) {
+        // Not a report — emit the suppressed content as a single chunk
+        emitter.emit('chunk', {
+          type: 'chunk',
+          messageId,
+          sessionId,
+          content: fullContent,
+          fullContent,
+        } as StreamChunk);
+      }
+      if (isActualReport) {
+        emitter.emit('chunk', {
+          type: 'status',
+          messageId,
+          sessionId,
+          mode,
+          message: 'Creating PDF...',
+          thinkingTrace: [...thinkingTrace],
+        } as StreamChunk);
+
+        try {
+          // Strip any LLM preamble (thinking/extraction notes) before the first markdown heading
+          const reportMarkdown = this.stripPreamble(fullContent);
+          const pdfBuffer = await this.projectChatService.renderMarkdownToPdf(reportMarkdown, 'SAP');
+          const dateStr = new Date().toISOString().slice(0, 10);
+          const filename = `SAP-Report-${dateStr}.pdf`;
+
+          // Try GCS upload first, fall back to serving from backend cache
+          try {
+            const gcsKey = `sap-reports/${options.projectId}/${messageId}/${filename}`;
+            const downloadUrl = await this.storage.uploadBuffer(gcsKey, pdfBuffer, 'application/pdf');
+            reportDownload = { downloadUrl, filename, messageId };
+            this.logger.log(`SAP report PDF uploaded to GCS: ${gcsKey}`);
+          } catch (uploadError: any) {
+            this.logger.warn(`GCS upload failed, serving from backend cache: ${uploadError.message}`);
+            const cacheKey = this.cachePdf(pdfBuffer, filename);
+            const downloadUrl = `/api/v1/gemini-chat/sap-report/${cacheKey}/download`;
+            reportDownload = { downloadUrl, filename, messageId };
+          }
+        } catch (pdfError: any) {
+          this.logger.error(`Failed to generate SAP report PDF: ${pdfError.message}`);
+        }
+      }
+
+      // For SAP reports: store full content in DB but only show brief message in chat
+      const chatContent = isActualReport
+        ? (reportDownload
+          ? 'Your SAP report has been generated. Download it using the button below.'
+          : 'Your SAP report has been generated but PDF creation failed. Here is the report:\n\n' + fullContent)
+        : fullContent;
+
+      // Update message in database (always store full report for reference)
       await this.prisma.ai_messages.update({
         where: { id: messageId },
         data: {
@@ -928,23 +1016,7 @@ export class GeminiChatService {
       }
 
       // Update session
-      await this.updateSessionAfterMessage(sessionId, content, fullContent);
-
-      // SAP Report: auto-generate PDF and upload to GCS
-      let reportDownload: StreamChunk['reportDownload'] | undefined;
-      if (isSapReport && this.looksLikeReport(fullContent) && options?.projectId) {
-        try {
-          const pdfBuffer = await this.projectChatService.renderMarkdownToPdf(fullContent, 'SAP');
-          const dateStr = new Date().toISOString().slice(0, 10);
-          const filename = `SAP-Report-${dateStr}.pdf`;
-          const gcsKey = `sap-reports/${options.projectId}/${messageId}/${filename}`;
-          const downloadUrl = await this.storage.uploadBuffer(gcsKey, pdfBuffer, 'application/pdf');
-          reportDownload = { downloadUrl, filename, messageId };
-          this.logger.log(`SAP report PDF auto-generated and uploaded: ${gcsKey}`);
-        } catch (pdfError: any) {
-          this.logger.error(`Failed to auto-generate SAP report PDF: ${pdfError.message}`);
-        }
-      }
+      await this.updateSessionAfterMessage(sessionId, content, chatContent);
 
       // Emit end with full thinking trace for persistent display
       emitter.emit('chunk', {
@@ -953,7 +1025,7 @@ export class GeminiChatService {
         sessionId,
         mode,
         provider,
-        fullContent,
+        fullContent: chatContent,
         thinkingTrace: [...thinkingTrace],
         usage: {
           promptTokens: usageMetadata?.promptTokens || 0,
@@ -1214,11 +1286,46 @@ export class GeminiChatService {
   }
 
   // ═══════════════════════════════════════════════════════════
+  // SAP PDF Cache (in-memory, auto-expires)
+  // ═══════════════════════════════════════════════════════════
+
+  /** Store a PDF in the temporary cache, returns a cache key. */
+  cachePdf(buffer: Buffer, filename: string): string {
+    // Clean up expired entries
+    const now = Date.now();
+    for (const [key, entry] of this.pdfCache) {
+      if (entry.expiresAt < now) this.pdfCache.delete(key);
+    }
+    const cacheKey = `sap-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    this.pdfCache.set(cacheKey, { buffer, filename, expiresAt: now + 30 * 60 * 1000 });
+    return cacheKey;
+  }
+
+  /** Retrieve a cached PDF by key. Returns null if expired or not found. */
+  getCachedPdf(cacheKey: string): { buffer: Buffer; filename: string } | null {
+    const entry = this.pdfCache.get(cacheKey);
+    if (!entry || entry.expiresAt < Date.now()) {
+      this.pdfCache.delete(cacheKey);
+      return null;
+    }
+    return { buffer: entry.buffer, filename: entry.filename };
+  }
+
+  // ═══════════════════════════════════════════════════════════
   // SAP Report Helpers
   // ═══════════════════════════════════════════════════════════
 
   private isSapProject(project: { title?: string | null }): boolean {
     return /\bsap\b/i.test(project.title || '');
+  }
+
+  /** Strip LLM preamble/thinking text before the first markdown heading */
+  private stripPreamble(content: string): string {
+    const firstHeading = content.search(/^#{1,3}\s+/m);
+    if (firstHeading > 0) {
+      return content.slice(firstHeading);
+    }
+    return content;
   }
 
   /** Check if the LLM response actually contains a report (not just a refusal). */
@@ -1230,41 +1337,40 @@ export class GeminiChatService {
 
   /**
    * Detect whether the user message is asking for a report and return the
-   * relevant demo report to inject into the user prompt.
-   * Only the demo file for the requested role is sent — one file per request.
+   * SAP system instructions — injected into the system prompt when a SAP project is attached.
+   * No regex. The LLM decides from the user's message whether to generate a report.
+   * All report templates are included so the LLM has them ready.
    */
-  private getSapReportContext(userMessage: string): string | null {
-    const msg = userMessage.toLowerCase();
-    const isReportRequest =
-      /generate\s+report|create\s+report|make\s+report|build\s+report|report\s+for|generate\s+pdf/i.test(msg);
-    if (!isReportRequest) return null;
-
-    const parts: string[] = [
-      '[SAP REPORT GENERATION CONTEXT]\n',
-      'Generate a report following the EXACT structure, tone, formatting, and level of detail of the demo report below.',
-      'Replace the demo data with real data from the uploaded study materials / questions.',
-      'For learning streaks specifically: if no streak data is provided, keep the demo streak values as realistic placeholders.\n',
-    ];
-
-    const isTeacher = /teacher/i.test(msg);
-    const isAdmin = /admin|administrator|principal/i.test(msg);
-    const isAll = /\ball\b/i.test(msg);
-
-    if (isAll) {
-      parts.push('=== STUDENT REPORT DEMO ===', DEMO_STUDENT_REPORT, '');
-      parts.push('=== TEACHER REPORT DEMO ===', DEMO_TEACHER_REPORT, '');
-      parts.push('=== ADMIN REPORT DEMO ===', DEMO_ADMIN_REPORT, '');
-    } else if (isTeacher) {
-      parts.push('=== TEACHER REPORT DEMO ===', DEMO_TEACHER_REPORT, '');
-    } else if (isAdmin) {
-      parts.push('=== ADMIN REPORT DEMO ===', DEMO_ADMIN_REPORT, '');
-    } else {
-      // Default to student
-      parts.push('=== STUDENT REPORT DEMO ===', DEMO_STUDENT_REPORT, '');
-    }
-
-    parts.push('[END OF SAP CONTEXT]');
-    return parts.join('\n');
+  private getSapSystemInstructions(): string {
+    return [
+      '\n\n[SAP — School Assessment & Performance Project]',
+      '',
+      'You are in a SAP project. You have VISION capabilities — you CAN see and read images.',
+      '',
+      'WHEN THE USER ASKS FOR A REPORT (in any wording — "generate report", "student report", "make my report", etc.):',
+      '1. ANALYZE all attached images in this conversation. Read ALL text: handwritten, printed, headers, labels.',
+      '2. EXTRACT: student name, ID, date, subject(s), and every question with its full text.',
+      '3. If NO images AND no study materials exist, ask the user to upload question images.',
+      '4. If images ARE present, ALWAYS attempt to read them. Use the EXACT name from the image.',
+      '5. Generate the report following the EXACT structure of the demo templates below.',
+      '6. Use REAL extracted data — never copy demo values. For learning streaks only: use demo values as placeholders if not provided.',
+      '7. Output the report in full markdown with proper headings (# ## ###). It must be comprehensive (1000+ words).',
+      '',
+      'The user may ask for a student report, teacher report, admin report, or all. Infer the type from context. Default to student report.',
+      '',
+      'WHEN THE USER IS NOT ASKING FOR A REPORT: respond normally as a helpful AI tutor.',
+      '',
+      '=== STUDENT REPORT DEMO ===',
+      DEMO_STUDENT_REPORT,
+      '',
+      '=== TEACHER REPORT DEMO ===',
+      DEMO_TEACHER_REPORT,
+      '',
+      '=== ADMIN REPORT DEMO ===',
+      DEMO_ADMIN_REPORT,
+      '',
+      '[END OF SAP TEMPLATES]',
+    ].join('\n');
   }
 
   /**

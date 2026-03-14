@@ -61,7 +61,8 @@ export class StorageService {
     if (this.publicUrl) {
       return `${this.publicUrl}/${key}`;
     }
-    return key;
+    // No public URL configured — return a signed URL (valid for 1 hour)
+    return this.getSignedUrl(key, 3600);
   }
 
   async getSignedUrl(key: string, expiresIn = 3600): Promise<string> {

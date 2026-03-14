@@ -53,15 +53,19 @@ export class AnthropicProvider implements ILlmProvider {
       ? Math.min(baseMaxTokens + options.thinkingBudget!, MAX_ANTHROPIC_TOKENS)
       : baseMaxTokens;
 
+    // Anthropic does not allow both temperature and top_p at the same time
+    const hasTopP = options.generationConfig?.topP !== undefined;
+    const hasTemp = options.generationConfig?.temperature !== undefined && !thinkingEnabled;
+
     const response = await this.client.messages.create({
       model: options.model,
       max_tokens: maxTokens,
       ...(system && { system }),
-      ...(options.generationConfig?.temperature !== undefined && !thinkingEnabled && {
-        temperature: options.generationConfig.temperature,
+      ...(hasTemp && !hasTopP && {
+        temperature: options.generationConfig!.temperature,
       }),
-      ...(options.generationConfig?.topP !== undefined && {
-        top_p: options.generationConfig.topP,
+      ...(hasTopP && {
+        top_p: options.generationConfig!.topP,
       }),
       ...(tools.length > 0 && { tools }),
       // Extended thinking: real chain-of-thought with thinking budget
@@ -108,15 +112,19 @@ export class AnthropicProvider implements ILlmProvider {
       ? Math.min(streamBaseMaxTokens + options.thinkingBudget!, MAX_STREAM_TOKENS)
       : streamBaseMaxTokens;
 
+    // Anthropic does not allow both temperature and top_p at the same time
+    const streamHasTopP = options.generationConfig?.topP !== undefined;
+    const streamHasTemp = options.generationConfig?.temperature !== undefined && !streamThinkingEnabled;
+
     const streamResponse = this.client.messages.stream({
       model: options.model,
       max_tokens: streamMaxTokens,
       ...(system && { system }),
-      ...(options.generationConfig?.temperature !== undefined && !streamThinkingEnabled && {
-        temperature: options.generationConfig.temperature,
+      ...(streamHasTemp && !streamHasTopP && {
+        temperature: options.generationConfig!.temperature,
       }),
-      ...(options.generationConfig?.topP !== undefined && {
-        top_p: options.generationConfig.topP,
+      ...(streamHasTopP && {
+        top_p: options.generationConfig!.topP,
       }),
       ...(streamTools.length > 0 && { tools: streamTools }),
       // Extended thinking: real chain-of-thought with thinking budget
@@ -128,50 +136,18 @@ export class AnthropicProvider implements ILlmProvider {
     } as any);
 
     let fullText = '';
-
-    const stream: LlmStream = {
-      [Symbol.asyncIterator]() {
-        const textStream = streamResponse.on('text', () => {});
-        // Use the event-based text stream
-        let started = false;
-        return {
-          async next() {
-            if (!started) {
-              started = true;
-            }
-            // Read text events via the async iterator on the stream
-            // Anthropic SDK provides .on('text') events
-            return { done: true as const, value: '' };
-          },
-        };
-      },
-      async getResponse() {
-        // Collect all text from the stream
-        const finalMessage = await streamResponse.finalMessage();
-        fullText = finalMessage.content
-          .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-          .map((b) => b.text)
-          .join('');
-        return {
-          text: fullText,
-          usage: {
-            promptTokens: finalMessage.usage.input_tokens,
-            completionTokens: finalMessage.usage.output_tokens,
-          },
-        };
-      },
-    };
-
-    // Better streaming: use the text stream properly
     const textEvents: string[] = [];
     let streamDone = false;
+    let streamError: Error | null = null;
     let resolveNext: ((value: IteratorResult<string>) => void) | null = null;
+    let rejectNext: ((err: Error) => void) | null = null;
 
     streamResponse.on('text', (text) => {
       fullText += text;
       if (resolveNext) {
         const r = resolveNext;
         resolveNext = null;
+        rejectNext = null;
         r({ done: false, value: text });
       } else {
         textEvents.push(text);
@@ -183,22 +159,38 @@ export class AnthropicProvider implements ILlmProvider {
       if (resolveNext) {
         const r = resolveNext;
         resolveNext = null;
+        rejectNext = null;
         r({ done: true, value: '' });
       }
     });
 
-    const properStream: LlmStream = {
+    streamResponse.on('error', (err: Error) => {
+      streamDone = true;
+      streamError = err;
+      if (rejectNext) {
+        const r = rejectNext;
+        resolveNext = null;
+        rejectNext = null;
+        r(err);
+      }
+    });
+
+    const resultStream: LlmStream = {
       [Symbol.asyncIterator]() {
         return {
           next(): Promise<IteratorResult<string>> {
             if (textEvents.length > 0) {
               return Promise.resolve({ done: false, value: textEvents.shift()! });
             }
+            if (streamError) {
+              return Promise.reject(streamError);
+            }
             if (streamDone) {
               return Promise.resolve({ done: true as const, value: '' });
             }
-            return new Promise((resolve) => {
+            return new Promise((resolve, reject) => {
               resolveNext = resolve;
+              rejectNext = reject;
             });
           },
         };
@@ -215,7 +207,7 @@ export class AnthropicProvider implements ILlmProvider {
       },
     };
 
-    return properStream;
+    return resultStream;
   }
 
   // ── Helpers ──

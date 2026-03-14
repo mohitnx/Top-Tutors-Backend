@@ -58,6 +58,30 @@ export class ProjectChatService {
     }
   > = new Map();
 
+  // Temporary in-memory PDF cache for SAP reports (auto-expires after 30 min)
+  private pdfCache: Map<string, { buffer: Buffer; filename: string; expiresAt: number }> = new Map();
+
+  /** Store a PDF in the temporary cache, returns a cache key. */
+  cachePdf(buffer: Buffer, filename: string): string {
+    const now = Date.now();
+    for (const [key, entry] of this.pdfCache) {
+      if (entry.expiresAt < now) this.pdfCache.delete(key);
+    }
+    const cacheKey = `sap-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    this.pdfCache.set(cacheKey, { buffer, filename, expiresAt: now + 30 * 60 * 1000 });
+    return cacheKey;
+  }
+
+  /** Retrieve a cached PDF by key. Returns null if expired or not found. */
+  getCachedPdf(cacheKey: string): { buffer: Buffer; filename: string } | null {
+    const entry = this.pdfCache.get(cacheKey);
+    if (!entry || entry.expiresAt < Date.now()) {
+      this.pdfCache.delete(cacheKey);
+      return null;
+    }
+    return { buffer: entry.buffer, filename: entry.filename };
+  }
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly projectsService: ProjectsService,
@@ -667,7 +691,7 @@ export class ProjectChatService {
           ? 'deep-research' as const
           : 'project-chat' as const;
 
-      const provider = this.getProviderForTask(task);
+      let provider = this.getProviderForTask(task);
       const resolved = this.llm.resolvePrompt(promptId, undefined, provider);
 
       this.logger.log(`[project-${task}] Using provider: ${provider}, models: [${resolved.models.join(', ')}]`);
@@ -701,15 +725,8 @@ export class ProjectChatService {
       // Build prompt parts
       const promptParts = await this.buildPromptParts(content, attachments, resourceContext);
 
-      // For SAP projects: inject the relevant report template + demo when user requests a report
-      let isSapReport = false;
-      if (this.isSapProject(project) && content) {
-        const sapContext = this.getSapReportContext(content);
-        if (sapContext) {
-          promptParts.unshift({ text: sapContext });
-          isSapReport = true;
-        }
-      }
+      // SAP: always flag — the LLM decides whether to generate a report
+      const isSapReport = isSap;
 
       // Emit start with mode-specific message
       const startMessage = options?.deepThink
@@ -793,10 +810,19 @@ export class ProjectChatService {
         { role: 'user', parts: promptParts },
       ];
 
+      // SAP: override to best available model
+      let activeModels = resolved.models;
+      if (isSap && this.llm.isProviderAvailable('anthropic')) {
+        activeModels = ['claude-opus-4-6', 'claude-sonnet-4-20250514'];
+        provider = 'anthropic';
+        // Anthropic can't have both temperature and topP
+        delete genConfig.topP;
+      }
+
       const llmStream = await this.llm.streamWithFallback(messages, {
         systemPrompt: systemPrompt || undefined,
         generationConfig: genConfig,
-        models: resolved.models,
+        models: activeModels,
         provider,
         webSearch: true,
       });
@@ -834,20 +860,74 @@ export class ProjectChatService {
           streamData.lastActivityAtMs = Date.now();
         }
 
-        emitter.emit('chunk', {
-          type: 'chunk',
-          messageId,
-          sessionId,
-          projectId: project.id,
-          content: chunkText,
-          fullContent,
-        } as ProjectStreamChunk);
+        // SAP: suppress content chunks — PDF will be generated at the end
+        if (!isSapReport) {
+          emitter.emit('chunk', {
+            type: 'chunk',
+            messageId,
+            sessionId,
+            projectId: project.id,
+            content: chunkText,
+            fullContent,
+          } as ProjectStreamChunk);
+        }
       }
 
       // Get usage stats from the completed stream
       const response = await llmStream.getResponse();
 
-      // Update message in database
+      // SAP: if content was suppressed but it's NOT a report, emit full content now
+      let reportDownload: ProjectStreamChunk['reportDownload'] | undefined;
+      const isActualReport = isSapReport && this.looksLikeReport(fullContent);
+      if (isSapReport && !isActualReport) {
+        emitter.emit('chunk', {
+          type: 'chunk',
+          messageId,
+          sessionId,
+          projectId: project.id,
+          content: fullContent,
+          fullContent,
+        } as ProjectStreamChunk);
+      }
+      if (isActualReport) {
+        emitter.emit('chunk', {
+          type: 'status',
+          messageId,
+          sessionId,
+          projectId: project.id,
+          message: 'Creating PDF...',
+        } as ProjectStreamChunk);
+
+        try {
+          const reportMarkdown = this.stripPreamble(fullContent);
+          const pdfBuffer = await this.renderMarkdownToPdf(reportMarkdown, project.title);
+          const dateStr = new Date().toISOString().slice(0, 10);
+          const filename = `SAP-Report-${dateStr}.pdf`;
+
+          try {
+            const gcsKey = `sap-reports/${project.id}/${messageId}/${filename}`;
+            const downloadUrl = await this.storage.uploadBuffer(gcsKey, pdfBuffer, 'application/pdf');
+            reportDownload = { downloadUrl, filename, messageId };
+            this.logger.log(`SAP report PDF uploaded to GCS: ${gcsKey}`);
+          } catch (uploadError: any) {
+            this.logger.warn(`GCS upload failed, serving from backend cache: ${uploadError.message}`);
+            const cacheKey = this.cachePdf(pdfBuffer, filename);
+            const downloadUrl = `/api/v1/projects/sap-report/${cacheKey}/download`;
+            reportDownload = { downloadUrl, filename, messageId };
+          }
+        } catch (pdfError: any) {
+          this.logger.error(`Failed to generate SAP report PDF: ${pdfError.message}`);
+        }
+      }
+
+      // For SAP reports: store full content in DB but only show brief message in chat
+      const chatContent = isActualReport
+        ? (reportDownload
+          ? 'Your SAP report has been generated. Download it using the button below.'
+          : 'Your SAP report has been generated but PDF creation failed. Here is the report:\n\n' + fullContent)
+        : fullContent;
+
+      // Update message in database (always store full report for reference)
       await this.prisma.project_messages.update({
         where: { id: messageId },
         data: {
@@ -865,30 +945,13 @@ export class ProjectChatService {
       // Update session
       await this.updateSessionAfterMessage(sessionId, content);
 
-      // SAP Report: auto-generate PDF and upload to GCS
-      let reportDownload: ProjectStreamChunk['reportDownload'] | undefined;
-      if (isSapReport && this.looksLikeReport(fullContent)) {
-        try {
-          const pdfBuffer = await this.renderMarkdownToPdf(fullContent, project.title);
-          const dateStr = new Date().toISOString().slice(0, 10);
-          const filename = `SAP-Report-${dateStr}.pdf`;
-          const gcsKey = `sap-reports/${project.id}/${messageId}/${filename}`;
-          const downloadUrl = await this.storage.uploadBuffer(gcsKey, pdfBuffer, 'application/pdf');
-          reportDownload = { downloadUrl, filename, messageId };
-          this.logger.log(`SAP report PDF auto-generated and uploaded: ${gcsKey}`);
-        } catch (pdfError: any) {
-          this.logger.error(`Failed to auto-generate SAP report PDF: ${pdfError.message}`);
-          // Non-fatal — the report text is still in the message, user can download via manual endpoint
-        }
-      }
-
       // Emit end
       emitter.emit('chunk', {
         type: 'end',
         messageId,
         sessionId,
         projectId: project.id,
-        fullContent,
+        fullContent: chatContent,
         usage: {
           promptTokens: response.usage?.promptTokens || 0,
           completionTokens: response.usage?.completionTokens || 0,
@@ -1272,19 +1335,26 @@ export class ProjectChatService {
 
     // SAP Report: auto-generate PDF for council mode too
     let reportDownload: ProjectStreamChunk['reportDownload'] | undefined;
-    const isSapReport = this.isSapProject(project) && userContent &&
-      this.getSapReportContext(userContent) !== null;
+    const isSapReport = this.isSapProject(project);
     if (isSapReport && this.looksLikeReport(fullContent)) {
       try {
-        const pdfBuffer = await this.renderMarkdownToPdf(fullContent, project.title);
+        const pdfBuffer = await this.renderMarkdownToPdf(this.stripPreamble(fullContent), project.title);
         const dateStr = new Date().toISOString().slice(0, 10);
         const filename = `SAP-Report-${dateStr}.pdf`;
-        const gcsKey = `sap-reports/${projectId}/${messageId}/${filename}`;
-        const downloadUrl = await this.storage.uploadBuffer(gcsKey, pdfBuffer, 'application/pdf');
-        reportDownload = { downloadUrl, filename, messageId };
-        this.logger.log(`SAP report PDF auto-generated (council) and uploaded: ${gcsKey}`);
+
+        try {
+          const gcsKey = `sap-reports/${projectId}/${messageId}/${filename}`;
+          const downloadUrl = await this.storage.uploadBuffer(gcsKey, pdfBuffer, 'application/pdf');
+          reportDownload = { downloadUrl, filename, messageId };
+          this.logger.log(`SAP report PDF uploaded to GCS (council): ${gcsKey}`);
+        } catch (uploadError: any) {
+          this.logger.warn(`GCS upload failed (council), serving from backend cache: ${uploadError.message}`);
+          const cacheKey = this.cachePdf(pdfBuffer, filename);
+          const downloadUrl = `/api/v1/projects/sap-report/${cacheKey}/download`;
+          reportDownload = { downloadUrl, filename, messageId };
+        }
       } catch (pdfError: any) {
-        this.logger.error(`Failed to auto-generate SAP report PDF (council): ${pdfError.message}`);
+        this.logger.error(`Failed to generate SAP report PDF (council): ${pdfError.message}`);
       }
     }
 
@@ -1578,50 +1648,58 @@ export class ProjectChatService {
     });
   }
 
-  // ============ SAP Report Context ============
+  // ============ SAP System Instructions ============
 
   /**
-   * Detects which SAP report type the user is requesting and returns
+   * Returns SAP system instructions with all report templates.
+   * No regex — the LLM infers whether the user wants a report.
    * the relevant template + demo example to inject into the prompt.
-   * Returns null if the message doesn't look like a report request.
    */
-  private getSapReportContext(userMessage: string): string | null {
-    const msg = userMessage.toLowerCase();
-
-    const isReportRequest = /generate\s+report|create\s+report|make\s+report|build\s+report|report\s+for|generate\s+pdf/i.test(msg);
-    if (!isReportRequest) return null;
-
-    const parts: string[] = [
-      '[SAP REPORT GENERATION CONTEXT]\n',
-      'Generate a report following the EXACT structure, tone, formatting, and level of detail of the demo report below.',
-      'Replace the demo data with real data from the uploaded study materials / questions.',
-      'For learning streaks specifically: if no streak data is provided, keep the demo streak values as realistic placeholders.\n',
-    ];
-
-    const isTeacher = /teacher/i.test(msg);
-    const isAdmin = /admin|administrator|principal/i.test(msg);
-    const isAll = /\ball\b/i.test(msg);
-
-    if (isAll) {
-      parts.push('=== STUDENT REPORT DEMO ===', DEMO_STUDENT_REPORT, '');
-      parts.push('=== TEACHER REPORT DEMO ===', DEMO_TEACHER_REPORT, '');
-      parts.push('=== ADMIN REPORT DEMO ===', DEMO_ADMIN_REPORT, '');
-    } else if (isTeacher) {
-      parts.push('=== TEACHER REPORT DEMO ===', DEMO_TEACHER_REPORT, '');
-    } else if (isAdmin) {
-      parts.push('=== ADMIN REPORT DEMO ===', DEMO_ADMIN_REPORT, '');
-    } else {
-      parts.push('=== STUDENT REPORT DEMO ===', DEMO_STUDENT_REPORT, '');
-    }
-
-    parts.push('[END OF SAP CONTEXT]');
-    return parts.join('\n');
+  private getSapSystemInstructions(): string {
+    return [
+      '\n\n[SAP — School Assessment & Performance Project]',
+      '',
+      'You are in a SAP project. You have VISION capabilities — you CAN see and read images.',
+      '',
+      'WHEN THE USER ASKS FOR A REPORT (in any wording — "generate report", "student report", "make my report", etc.):',
+      '1. ANALYZE all attached images in this conversation. Read ALL text: handwritten, printed, headers, labels.',
+      '2. EXTRACT: student name, ID, date, subject(s), and every question with its full text.',
+      '3. If NO images AND no study materials exist, ask the user to upload question images.',
+      '4. If images ARE present, ALWAYS attempt to read them. Use the EXACT name from the image.',
+      '5. Generate the report following the EXACT structure of the demo templates below.',
+      '6. Use REAL extracted data — never copy demo values. For learning streaks only: use demo values as placeholders if not provided.',
+      '7. Output the report in full markdown with proper headings (# ## ###). It must be comprehensive (1000+ words).',
+      '',
+      'The user may ask for a student report, teacher report, admin report, or all. Infer the type from context. Default to student report.',
+      '',
+      'WHEN THE USER IS NOT ASKING FOR A REPORT: respond normally as a helpful AI tutor.',
+      '',
+      '=== STUDENT REPORT DEMO ===',
+      DEMO_STUDENT_REPORT,
+      '',
+      '=== TEACHER REPORT DEMO ===',
+      DEMO_TEACHER_REPORT,
+      '',
+      '=== ADMIN REPORT DEMO ===',
+      DEMO_ADMIN_REPORT,
+      '',
+      '[END OF SAP TEMPLATES]',
+    ].join('\n');
   }
 
   // ============ Helpers ============
 
   private isSapProject(project: any): boolean {
     return project.title?.trim().toLowerCase() === 'sap';
+  }
+
+  /** Strip LLM preamble/thinking text before the first markdown heading */
+  private stripPreamble(content: string): string {
+    const firstHeading = content.search(/^#{1,3}\s+/m);
+    if (firstHeading > 0) {
+      return content.slice(firstHeading);
+    }
+    return content;
   }
 
   /**
@@ -1637,9 +1715,7 @@ export class ProjectChatService {
   private buildProjectSystemPrompt(project: any): string {
     const isSap = this.isSapProject(project);
 
-    const sapInstructions = isSap
-      ? '\n\nThis is a SAP (School Assessment & Performance) project. When the user asks to generate a report, a demo report will be injected into the prompt — follow its exact structure, tone, and formatting. Replace demo data with real data from uploaded materials.'
-      : '';
+    const sapInstructions = isSap ? this.getSapSystemInstructions() : '';
 
     const resolved = this.llm.resolvePrompt('project-chat', {
       title: project.title,
