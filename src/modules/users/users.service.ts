@@ -70,11 +70,35 @@ export class UsersService {
       }
       const school = await this.prisma.school.findUnique({ where: { id: dto.schoolId } });
       if (!school) throw new NotFoundException(`School ${dto.schoolId} not found`);
+
+      if (!dto.sectionId) {
+        throw new BadRequestException('sectionId is required for TEACHER role — create a grade and section first');
+      }
+      if (!dto.subject) {
+        throw new BadRequestException('subject is required for TEACHER role');
+      }
+      const section = await this.prisma.class_sections.findUnique({ where: { id: dto.sectionId } });
+      if (!section) throw new NotFoundException(`Section ${dto.sectionId} not found`);
+      if (section.schoolId !== dto.schoolId) {
+        throw new BadRequestException('Section does not belong to this school');
+      }
     }
 
-    if (dto.schoolId && dto.role === Role.STUDENT) {
+    if (dto.role === Role.STUDENT) {
+      if (!dto.schoolId) {
+        throw new BadRequestException('schoolId is required for STUDENT role');
+      }
       const school = await this.prisma.school.findUnique({ where: { id: dto.schoolId } });
       if (!school) throw new NotFoundException(`School ${dto.schoolId} not found`);
+
+      if (!dto.sectionId) {
+        throw new BadRequestException('sectionId is required for STUDENT role — create a grade and section first');
+      }
+      const section = await this.prisma.class_sections.findUnique({ where: { id: dto.sectionId } });
+      if (!section) throw new NotFoundException(`Section ${dto.sectionId} not found`);
+      if (section.schoolId !== dto.schoolId) {
+        throw new BadRequestException('Section does not belong to this school');
+      }
     }
 
     const invitationToken = crypto.randomBytes(32).toString('hex');
@@ -96,13 +120,17 @@ export class UsersService {
       });
 
       if (dto.role === Role.STUDENT) {
-        await tx.students.create({
+        const student = await tx.students.create({
           data: {
             id: uuidv4(),
             userId: newUser.id,
-            schoolId: dto.schoolId ?? null,
+            schoolId: dto.schoolId!,
             updatedAt: new Date(),
           },
+        });
+        // Auto-assign to section
+        await tx.student_sections.create({
+          data: { studentId: student.id, sectionId: dto.sectionId! },
         });
       } else if (dto.role === Role.TUTOR) {
         await tx.tutors.create({
@@ -113,11 +141,15 @@ export class UsersService {
           },
         });
       } else if (dto.role === Role.TEACHER && dto.schoolId) {
-        await tx.teachers.create({
+        const teacher = await tx.teachers.create({
           data: {
             userId: newUser.id,
             schoolId: dto.schoolId,
           },
+        });
+        // Auto-assign to section+subject
+        await tx.teacher_sections.create({
+          data: { teacherId: teacher.id, sectionId: dto.sectionId!, subject: dto.subject! },
         });
       }
 

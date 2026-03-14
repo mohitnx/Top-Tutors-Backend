@@ -18,6 +18,7 @@ model User {
   createdAt            DateTime         @default(now())
   updatedAt            DateTime         @updatedAt
   avatar               String?
+  googleId             String?          @unique // Google OAuth subject ID
 
   // Invitation flow
   invitationToken      String?          @unique
@@ -277,6 +278,7 @@ model tutors {
   users         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   tutor_availability_responses tutor_availability_responses[]
   tutor_sessions tutor_sessions[]
+  session_participations tutor_session_participants[]
 }
 
 // Pending tutor notifications for smart routing
@@ -491,14 +493,19 @@ model ai_chat_sessions {
   tutorSummary        String?       // Detailed summary for tutor
   tutorSummaryGeneratedAt DateTime?
   messageSnapshotCount Int?         // Number of messages at summary time
-  
+
+  // Project link — when a main chat session uses project context
+  projectId     String?             // Links to projects table if project context was attached
+
   users         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projects      projects?           @relation(fields: [projectId], references: [id], onDelete: SetNull)
   ai_messages   ai_messages[]
   tutor_sessions tutor_sessions[]
-  
+
   @@index([userId])
   @@index([lastMessageAt])
   @@index([subject])
+  @@index([projectId])
 }
 
 // AI Message - individual messages in an AI chat session
@@ -628,11 +635,32 @@ model tutor_sessions {
   ai_chat_sessions    ai_chat_sessions    @relation(fields: [aiSessionId], references: [id], onDelete: Cascade)
   tutors              tutors?             @relation(fields: [tutorId], references: [id], onDelete: Cascade)
   students            students            @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  
+  participants        tutor_session_participants[]
+
   @@index([aiSessionId])
   @@index([tutorId])
   @@index([studentId])
   @@index([status])
+}
+
+// Additional tutors invited to a tutor session (multi-tutor collaboration)
+model tutor_session_participants {
+  id              String    @id @default(uuid())
+  sessionId       String
+  tutorId         String
+  invitedBy       String    // tutorId of the tutor who invited
+  status          String    @default("INVITED") // INVITED, JOINED, LEFT
+  dailyRoomToken  String?
+  joinedAt        DateTime?
+  leftAt          DateTime?
+  createdAt       DateTime  @default(now())
+
+  tutor_sessions  tutor_sessions @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  tutors          tutors         @relation(fields: [tutorId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, tutorId])
+  @@index([sessionId])
+  @@index([tutorId])
 }
 
 enum TutorSessionStatus {
@@ -667,7 +695,7 @@ model class_sections {
   id        String   @id @default(uuid())
   schoolId  String
   name      String
-  grade     String?
+  grade     String
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -678,6 +706,7 @@ model class_sections {
   daily_uploads    daily_uploads[]
   weekly_packages  weekly_packages[]
 
+  @@unique([schoolId, grade, name])
   @@index([schoolId])
   @@map("class_sections")
 }
@@ -817,6 +846,7 @@ enum QuestionRankType {
 enum ProjectResourceType {
   PDF
   IMAGE
+  DOCUMENT
 }
 
 model projects {
@@ -833,6 +863,7 @@ model projects {
   users                  User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   project_resources      project_resources[]
   project_chat_sessions  project_chat_sessions[]
+  ai_chat_sessions       ai_chat_sessions[]      // LLM chat sessions linked to this project
 
   @@index([userId])
   @@index([createdAt])
@@ -842,18 +873,21 @@ model projects {
 model project_resources {
   id            String              @id @default(uuid())
   projectId     String
+  sessionId     String?             // null = project-level, set = session-level
   type          ProjectResourceType
   title         String
-  url           String?             // S3 key or full URL
+  url           String?             // GCS key or full URL
   content       String?             // Extracted text (for AI context)
   fileSize      Int?                // bytes
   mimeType      String?
   metadata      Json?               // page count, dimensions, etc.
   createdAt     DateTime            @default(now())
 
-  projects projects @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projects              projects                @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project_chat_sessions project_chat_sessions?  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@index([projectId])
+  @@index([sessionId])
   @@map("project_resources")
 }
 
@@ -866,9 +900,10 @@ model project_chat_sessions {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  projects         projects @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  users            User                          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  project_messages project_messages[]
+  projects           projects             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  users              User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project_messages   project_messages[]
+  project_resources  project_resources[]
 
   @@index([projectId])
   @@index([userId])

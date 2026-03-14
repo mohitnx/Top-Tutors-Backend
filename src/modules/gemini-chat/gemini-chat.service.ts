@@ -11,6 +11,14 @@ import { SystemInstructionsService } from '../ai/system-instructions/system-inst
 import { LlmService, LlmMessage, LlmContentPart, LlmStream } from '../llm';
 import { LlmProvider } from '../prompts/types/prompt.types';
 import { PromptService } from '../prompts/prompt.service';
+import { ProjectsService } from '../projects/projects.service';
+import { ProjectChatService } from '../projects/project-chat.service';
+import {
+  DEMO_STUDENT_REPORT,
+  DEMO_TEACHER_REPORT,
+  DEMO_ADMIN_REPORT,
+} from '../projects/sap-templates';
+import { StorageService } from '../storage/storage.service';
 import {
   CreateSessionDto,
   UpdateSessionDto,
@@ -36,12 +44,15 @@ export interface StreamingResponse {
   messageId: string;
   sessionId: string;
   emitter: EventEmitter;
+  /** Audio URL for audio messages (so frontend can play back what the user said) */
+  audioUrl?: string;
+  /** Transcription text for audio messages */
+  transcription?: string;
 }
 
 @Injectable()
 export class GeminiChatService {
   private readonly logger = new Logger(GeminiChatService.name);
-  private workingModelName: string | null = null;
 
   // Track active streams for reconnection
   private activeStreams: Map<
@@ -52,6 +63,12 @@ export class GeminiChatService {
       startedAtMs: number;
       lastActivityAtMs: number;
       cancelled?: boolean;
+      // Extended state for reconnection
+      messageId: string;
+      sessionId: string;
+      mode?: StreamChunk['mode'];
+      thinkingTrace: string[];
+      provider?: string;
     }
   > = new Map();
 
@@ -61,49 +78,41 @@ export class GeminiChatService {
     private readonly systemInstructions: SystemInstructionsService,
     private readonly promptService: PromptService,
     private readonly llm: LlmService,
+    private readonly projectsService: ProjectsService,
+    private readonly storage: StorageService,
+    private readonly projectChatService: ProjectChatService,
   ) {}
 
   /**
-   * Get or detect a working model name (tries multiple models via LlmService)
+   * Select the best provider for a given task.
+   * - Normal chat / Deep Think → anthropic (paid, best reasoning) → vertex → gemini (free)
+   * - Deep Research → vertex (paid Gemini with Google Search) → gemini → anthropic
+   * - Council → uses the default provider priority
    */
-  private workingProvider: string | null = null;
-
-  private async getWorkingModelName(): Promise<string> {
-    if (this.workingModelName) return this.workingModelName;
-
-    // Try each available provider in priority order
-    const providers = this.llm.getAvailableProviders();
-    for (const providerName of providers) {
-      const resolved = this.llm.resolvePrompt('tutor-chat-single', undefined, providerName);
-      for (const modelName of resolved.models) {
-        try {
-          const testResult = await this.llm.generate(
-            providerName,
-            [{ role: 'user', parts: [{ text: 'Hi' }] }],
-            {
-              model: modelName,
-              systemPrompt: resolved.systemPrompt || undefined,
-              generationConfig: resolved.generationConfig,
-            },
-          );
-          if (testResult.text) {
-            this.workingModelName = modelName;
-            this.workingProvider = providerName;
-            this.logger.log(`Using model: ${modelName} (provider: ${providerName})`);
-            return modelName;
-          }
-        } catch (error: any) {
-          this.logger.warn(`[${providerName}] Model ${modelName} failed: ${error.message}`);
-          continue;
-        }
-      }
+  private getProviderForTask(task: 'chat' | 'deep-think' | 'deep-research' | 'council'): LlmProvider {
+    if (task === 'deep-research') {
+      // Prefer Gemini-family for deep research (native Google Search grounding)
+      if (this.llm.isProviderAvailable('vertex')) return 'vertex';
+      if (this.llm.isProviderAvailable('gemini')) return 'gemini';
+      if (this.llm.isProviderAvailable('anthropic')) return 'anthropic';
+    } else if (task === 'council') {
+      // Council members use Gemini-specific model names — must use Gemini-family provider
+      if (this.llm.isProviderAvailable('vertex')) return 'vertex';
+      if (this.llm.isProviderAvailable('gemini')) return 'gemini';
+      // Anthropic/OpenAI can't use gemini-2.5-pro model names
+      return this.llm.getDefaultProvider();
+    } else if (task === 'deep-think') {
+      // Prefer Gemini Pro for deep thinking (native thinking mode, produces visibly deeper responses)
+      if (this.llm.isProviderAvailable('vertex')) return 'vertex';
+      if (this.llm.isProviderAvailable('gemini')) return 'gemini';
+      if (this.llm.isProviderAvailable('anthropic')) return 'anthropic';
+    } else if (task === 'chat') {
+      // Prefer Anthropic for regular chat (best conversational quality)
+      if (this.llm.isProviderAvailable('anthropic')) return 'anthropic';
+      if (this.llm.isProviderAvailable('vertex')) return 'vertex';
+      if (this.llm.isProviderAvailable('gemini')) return 'gemini';
     }
-
-    throw new InternalServerErrorException('No working LLM model found. Check your API keys.');
-  }
-
-  private getActiveProvider(): LlmProvider {
-    return (this.workingProvider as LlmProvider) || this.llm.getDefaultProvider();
+    return this.llm.getDefaultProvider();
   }
 
   // ============ Session Management ============
@@ -283,9 +292,6 @@ export class GeminiChatService {
   }> {
     this.logger.log(`sendMessage called for user ${userId}, content: ${dto.content?.substring(0, 50)}...`);
 
-    const modelName = await this.getWorkingModelName();
-    this.logger.log(`Using model: ${modelName}`);
-
     // Get or create session
     let session: any;
     if (dto.sessionId) {
@@ -295,9 +301,19 @@ export class GeminiChatService {
       if (!session) {
         throw new NotFoundException('Session not found');
       }
+      // Link existing session to project if projectId is newly provided
+      if (dto.projectId && !session.projectId) {
+        session = await this.prisma.ai_chat_sessions.update({
+          where: { id: session.id },
+          data: { projectId: dto.projectId },
+        });
+      }
     } else {
       session = await this.prisma.ai_chat_sessions.create({
-        data: { userId },
+        data: {
+          userId,
+          ...(dto.projectId && { projectId: dto.projectId }),
+        },
       });
     }
 
@@ -323,17 +339,74 @@ export class GeminiChatService {
     try {
       this.logger.log(`Generating content with history length: ${history.length}`);
 
-      const resolved = this.llm.resolvePrompt('tutor-chat-single');
+      // Select prompt and provider based on deep mode flags
+      const task = dto.deepThink ? 'deep-think' : dto.deepResearch ? 'deep-research' : 'chat';
+      const promptId = task === 'deep-think'
+        ? 'deep-think' as const
+        : task === 'deep-research'
+          ? 'deep-research' as const
+          : 'tutor-chat-single' as const;
+
+      const provider = this.getProviderForTask(task);
+      const resolved = this.llm.resolvePrompt(promptId, undefined, provider);
+      let systemPrompt = resolved.systemPrompt || '';
+
+      this.logger.log(`[${task}] Using provider: ${provider}, models: [${resolved.models.join(', ')}]`);
+
+      // Inject project context if projectId is provided
+      let projectTemperature: number | undefined;
+      let isSap = false;
+      if (dto.projectId) {
+        const project = await this.projectsService.verifyOwnership(dto.projectId, userId);
+        isSap = this.isSapProject(project);
+
+        // Inject custom AI system prompt / persona
+        if (project.aiSystemPrompt) {
+          systemPrompt += `\n\n[Project Persona Instructions]\n${project.aiSystemPrompt}`;
+        }
+        if (project.title) {
+          systemPrompt += `\n\n[Project: "${project.title}"]`;
+        }
+
+
+
+        // Inject study materials context
+        const projectContext = await this.projectsService.getResourceContext(dto.projectId);
+        if (projectContext) {
+          const truncated = projectContext.length > 50000
+            ? projectContext.slice(0, 50000) + '\n\n[Study materials truncated due to length...]'
+            : projectContext;
+          systemPrompt += `\n\n[Study Materials from Project]\n${truncated}`;
+        }
+
+        projectTemperature = project.aiTemperature;
+      }
+
+      // SAP: inject the relevant report template + demo into user prompt when report requested
+      let isSapReport = false;
+      if (isSap && dto.content) {
+        const sapContext = this.getSapReportContext(dto.content);
+        if (sapContext) {
+          promptParts.unshift({ text: sapContext });
+          isSapReport = true;
+        }
+      }
+
       const messages: LlmMessage[] = [
         ...history,
         { role: 'user', parts: promptParts },
       ];
 
-      // Generate response (with web search for real-time info)
-      const result = await this.llm.generate(this.getActiveProvider(), messages, {
-        model: modelName,
-        systemPrompt: resolved.systemPrompt || undefined,
-        generationConfig: resolved.generationConfig,
+      // Generate response with automatic fallback across providers (web search enabled)
+      const genConfig = { ...resolved.generationConfig };
+      if (projectTemperature !== undefined) genConfig.temperature = projectTemperature;
+      // SAP reports need more output tokens
+      if (isSap) genConfig.maxOutputTokens = 16384;
+      const result = await this.llm.generateWithFallback(messages, {
+        systemPrompt: systemPrompt || undefined,
+        generationConfig: genConfig,
+        models: resolved.models,
+        provider,
         webSearch: true,
       });
 
@@ -356,6 +429,22 @@ export class GeminiChatService {
 
       this.logger.log(`Created AI message with ID: ${aiMessage.id}`);
 
+      // SAP Report: auto-generate PDF and upload to GCS
+      let reportDownload: StreamChunk['reportDownload'] | undefined;
+      if (isSapReport && responseText && this.looksLikeReport(responseText) && dto.projectId) {
+        try {
+          const pdfBuffer = await this.projectChatService.renderMarkdownToPdf(responseText, 'SAP');
+          const dateStr = new Date().toISOString().slice(0, 10);
+          const filename = `SAP-Report-${dateStr}.pdf`;
+          const gcsKey = `sap-reports/${dto.projectId}/${aiMessage.id}/${filename}`;
+          const downloadUrl = await this.storage.uploadBuffer(gcsKey, pdfBuffer, 'application/pdf');
+          reportDownload = { downloadUrl, filename, messageId: aiMessage.id };
+          this.logger.log(`SAP report PDF auto-generated and uploaded: ${gcsKey}`);
+        } catch (pdfError: any) {
+          this.logger.error(`Failed to auto-generate SAP report PDF: ${pdfError.message}`);
+        }
+      }
+
       // Update session
       await this.updateSessionAfterMessage(session.id, dto.content || '', responseText);
 
@@ -369,6 +458,7 @@ export class GeminiChatService {
         userMessage: this.formatMessage(userMessage),
         aiMessage: this.formatMessage(aiMessage),
         session: this.formatSession(updatedSession),
+        ...(reportDownload && { reportDownload }),
       };
     } catch (error: any) {
       this.logger.error(`Error generating AI response: ${error.message}`, error.stack);
@@ -404,9 +494,6 @@ export class GeminiChatService {
     dto: SendMessageDto,
     attachments?: Express.Multer.File[],
   ): Promise<StreamingResponse> {
-    // Pre-validate model availability
-    await this.getWorkingModelName();
-
     const emitter = new EventEmitter();
 
     // Get or create session
@@ -419,18 +506,35 @@ export class GeminiChatService {
       if (!session) {
         throw new NotFoundException('Session not found');
       }
+      // Link existing session to project if projectId is newly provided
+      if (dto.projectId && !session.projectId) {
+        session = await this.prisma.ai_chat_sessions.update({
+          where: { id: session.id },
+          data: { projectId: dto.projectId },
+        });
+      }
     } else {
       session = await this.prisma.ai_chat_sessions.create({
-        data: { userId },
+        data: {
+          userId,
+          ...(dto.projectId && { projectId: dto.projectId }),
+        },
       });
     }
 
-    // Route to council mode if enabled on this session
-    if (session.mode === 'COUNCIL') {
-      this.logger.log(`[MODE] Council mode active for session ${session.id} — routing to multi-expert pipeline`);
+    // Route to council mode if requested per-message OR set on session,
+    // BUT deep think / deep research flags take priority over council.
+    const wantsCouncil = dto.council === true || session.mode === 'COUNCIL';
+    const wantsDeep = dto.deepThink === true || dto.deepResearch === true;
+
+    if (wantsCouncil && !wantsDeep) {
+      this.logger.log(`[MODE] Council mode for session ${session.id} — routing to multi-expert pipeline`);
       return this.runCouncilStreaming(session, dto.content || '', attachments, emitter);
     }
-    this.logger.log(`[MODE] Single AI mode for session ${session.id}`);
+    this.logger.log(
+      `[MODE] Single AI mode for session ${session.id}` +
+      (dto.deepThink ? ' (deep think)' : dto.deepResearch ? ' (deep research)' : ''),
+    );
 
     // Process attachments
     const processedAttachments = await this.processAttachments(attachments);
@@ -460,12 +564,22 @@ export class GeminiChatService {
 
     // Initialize stream tracking
     const now = Date.now();
+    const mode: StreamChunk['mode'] = dto.deepThink
+      ? 'deep-think'
+      : dto.deepResearch
+        ? 'deep-research'
+        : 'single';
     this.activeStreams.set(streamId, {
       content: '',
       complete: false,
       startedAtMs: now,
       lastActivityAtMs: now,
       cancelled: false,
+      messageId: aiMessage.id,
+      sessionId: session.id,
+      mode,
+      thinkingTrace: [],
+      provider: undefined, // set once provider is resolved in streamResponse
     });
 
     // Start streaming in background
@@ -476,6 +590,12 @@ export class GeminiChatService {
       dto.content || '',
       attachments,
       emitter,
+      {
+        deepThink: dto.deepThink,
+        deepResearch: dto.deepResearch,
+        projectId: dto.projectId,
+        userId,
+      },
     ).catch((error) => {
       this.logger.error(`Stream error: ${error.message}`);
       emitter.emit('chunk', {
@@ -503,6 +623,12 @@ export class GeminiChatService {
     content: string,
     attachments: Express.Multer.File[] | undefined,
     emitter: EventEmitter,
+    options?: {
+      deepThink?: boolean;
+      deepResearch?: boolean;
+      projectId?: string;
+      userId?: string;
+    },
   ): Promise<void> {
     const heartbeatIntervalMs =
       Number(this.configService.get<string>('GEMINI_STREAM_HEARTBEAT_MS')) || 5000;
@@ -514,31 +640,210 @@ export class GeminiChatService {
     let heartbeatTimer: NodeJS.Timeout | null = null;
 
     try {
-      // Get working model and prompt config
-      const modelName = await this.getWorkingModelName();
-      const resolved = this.llm.resolvePrompt('tutor-chat-single');
+      // Select prompt and provider based on task type
+      const task = options?.deepThink ? 'deep-think' : options?.deepResearch ? 'deep-research' : 'chat';
+      const promptId = task === 'deep-think'
+        ? 'deep-think' as const
+        : task === 'deep-research'
+          ? 'deep-research' as const
+          : 'tutor-chat-single' as const;
+
+      const provider = this.getProviderForTask(task);
+      const resolved = this.llm.resolvePrompt(promptId, undefined, provider);
+      let systemPrompt = resolved.systemPrompt || '';
+
+      // Update activeStream with resolved provider
+      const activeSD = this.activeStreams.get(streamId);
+      if (activeSD) activeSD.provider = provider;
+
+      this.logger.log(`[${task}] Using provider: ${provider}, models: [${resolved.models.join(', ')}]`);
+
+      // Inject project context if projectId is provided
+      let isSap = false;
+      if (options?.projectId && options?.userId) {
+        const project = await this.projectsService.verifyOwnership(options.projectId, options.userId);
+        isSap = this.isSapProject(project);
+
+        // Inject custom AI system prompt / persona
+        if (project.aiSystemPrompt) {
+          systemPrompt += `\n\n[Project Persona Instructions]\n${project.aiSystemPrompt}`;
+        }
+        if (project.title) {
+          systemPrompt += `\n\n[Project: "${project.title}"]`;
+        }
+
+
+
+        // Inject study materials context
+        const projectContext = await this.projectsService.getResourceContext(options.projectId);
+        if (projectContext) {
+          const truncated = projectContext.length > 50000
+            ? projectContext.slice(0, 50000) + '\n\n[Study materials truncated due to length...]'
+            : projectContext;
+          systemPrompt += `\n\n[Study Materials from Project]\n${truncated}`;
+        }
+
+        // Apply project's AI temperature
+        if (project.aiTemperature !== undefined && resolved.generationConfig) {
+          resolved.generationConfig.temperature = project.aiTemperature;
+        }
+
+        // SAP reports need more output tokens
+        if (isSap && resolved.generationConfig) {
+          resolved.generationConfig.maxOutputTokens = 16384;
+        }
+      }
 
       // Get conversation history + build prompt
       const history = await this.getConversationHistory(sessionId, messageId);
       const promptParts = await this.buildPromptParts(content, attachments);
+
+      // Guard: ensure we have something to send to the LLM
+      if (promptParts.length === 0) {
+        promptParts.push({ text: '(continue)' });
+      }
+
+      // SAP: inject the relevant report template + demo into user prompt when report requested
+      let isSapReport = false;
+      if (isSap && content) {
+        const sapContext = this.getSapReportContext(content);
+        if (sapContext) {
+          promptParts.unshift({ text: sapContext });
+          isSapReport = true;
+        }
+      }
+
+      // ── Mode detection & thinking trace ──
+      const mode: StreamChunk['mode'] = options?.deepThink
+        ? 'deep-think'
+        : options?.deepResearch
+          ? 'deep-research'
+          : 'single';
+      const thinkingTrace: string[] = [];
+
+      // Flag: once real content chunks start, stop emitting fake status phases
+      let streamingStarted = false;
+
+      /** Helper: emit a status chunk with an accumulated thinking trace */
+      const emitStatus = (message: string) => {
+        if (streamingStarted) return; // don't emit status after content has started
+        thinkingTrace.push(message);
+        // Keep activeStream in sync for reconnection
+        const sd = this.activeStreams.get(streamId);
+        if (sd) sd.thinkingTrace = [...thinkingTrace];
+        emitter.emit('chunk', {
+          type: 'status',
+          messageId,
+          sessionId,
+          mode,
+          message,
+          thinkingTrace: [...thinkingTrace],
+          provider,
+        } as StreamChunk);
+      };
+
+      /** Helper: schedule a status emission only if stream hasn't started yet */
+      const scheduleStatus = (delay: number, message: string) => {
+        setTimeout(() => {
+          const sd = this.activeStreams.get(streamId);
+          if (sd && !sd.complete && !sd.cancelled && !streamingStarted) {
+            emitStatus(message);
+          }
+        }, delay);
+      };
+
+      /** Called once when the first real content chunk arrives — closes the thinking phase */
+      const finalizeThinkingTrace = () => {
+        if (streamingStarted) return;
+        streamingStarted = true;
+        // Add a final closing entry so the trace has a clean ending
+        const closingMsg = options?.deepThink
+          ? 'Analysis complete — delivering answer...'
+          : options?.deepResearch
+            ? 'Research complete — delivering answer...'
+            : 'Delivering answer...';
+        thinkingTrace.push(closingMsg);
+        const sd = this.activeStreams.get(streamId);
+        if (sd) sd.thinkingTrace = [...thinkingTrace];
+        emitter.emit('chunk', {
+          type: 'status',
+          messageId,
+          sessionId,
+          mode,
+          message: closingMsg,
+          thinkingTrace: [...thinkingTrace],
+          provider,
+        } as StreamChunk);
+      };
 
       // Emit start
       emitter.emit('chunk', {
         type: 'start',
         messageId,
         sessionId,
-        message: 'Started generating response',
+        mode,
+        provider,
+        message: options?.deepThink
+          ? 'Starting deep analysis...'
+          : options?.deepResearch
+            ? 'Starting deep research...'
+            : 'Started generating response',
       } as StreamChunk);
 
-      // Stream via LlmService (with web search for real-time info)
-      const llmStream = await this.llm.stream(
-        this.getActiveProvider(),
+      // Generate question-specific insight phases
+      const insights = this.generateInsightPhases(content, mode);
+
+      // ── Deep Think phases — front-load insights before the LLM call ──
+      if (options?.deepThink) {
+        emitStatus(insights[0]);
+        // Rapid-fire first 3 insights before LLM call even starts
+        for (let i = 1; i < Math.min(insights.length, 3); i++) {
+          scheduleStatus(1200 * i, insights[i]);
+        }
+        // Remaining insights spaced out during LLM processing
+        for (let i = 3; i < insights.length; i++) {
+          scheduleStatus(3000 + (i - 3) * 2500, insights[i]);
+        }
+      }
+
+      // ── Deep Research phases ──
+      if (options?.deepResearch) {
+        emitStatus(insights[0]);
+        for (let i = 1; i < Math.min(insights.length, 3); i++) {
+          scheduleStatus(1000 * i, insights[i]);
+        }
+        for (let i = 3; i < insights.length; i++) {
+          scheduleStatus(2500 + (i - 3) * 2500, insights[i]);
+        }
+      }
+
+      // ── Normal single mode phases ──
+      if (!options?.deepThink && !options?.deepResearch) {
+        emitStatus(insights[0]);
+        for (let i = 1; i < insights.length; i++) {
+          scheduleStatus(2000 + (i - 1) * 3000, insights[i]);
+        }
+      }
+
+      // Deep Think: deliberate pause to let insight phases show before streaming begins
+      // This creates the "thinking" feel — the user sees analysis phases for ~3s first
+      if (options?.deepThink) {
+        await new Promise((resolve) => setTimeout(resolve, 3500));
+      }
+
+      // Stream via LlmService with automatic provider/model fallback
+      const llmStream = await this.llm.streamWithFallback(
         [...history, { role: 'user', parts: promptParts }],
         {
-          model: modelName,
-          systemPrompt: resolved.systemPrompt || undefined,
+          systemPrompt: systemPrompt || undefined,
           generationConfig: resolved.generationConfig,
+          models: resolved.models,
+          provider,
           webSearch: true,
+          // Deep Think: allocate thinking tokens for chain-of-thought reasoning
+          ...(options?.deepThink && { thinkingBudget: 10000 }),
+          // Deep Research: allow more web searches (8 instead of default 3)
+          ...(options?.deepResearch && { maxWebSearches: 8 }),
         },
       );
 
@@ -571,6 +876,9 @@ export class GeminiChatService {
         if (elapsedMs > totalTimeoutMs) {
           throw new Error('Generation timed out (took too long)');
         }
+
+        // First real chunk: close the thinking trace so no more fake phases appear
+        finalizeThinkingTrace();
 
         fullContent += chunkText;
 
@@ -616,16 +924,36 @@ export class GeminiChatService {
       // Update session
       await this.updateSessionAfterMessage(sessionId, content, fullContent);
 
-      // Emit end
+      // SAP Report: auto-generate PDF and upload to GCS
+      let reportDownload: StreamChunk['reportDownload'] | undefined;
+      if (isSapReport && this.looksLikeReport(fullContent) && options?.projectId) {
+        try {
+          const pdfBuffer = await this.projectChatService.renderMarkdownToPdf(fullContent, 'SAP');
+          const dateStr = new Date().toISOString().slice(0, 10);
+          const filename = `SAP-Report-${dateStr}.pdf`;
+          const gcsKey = `sap-reports/${options.projectId}/${messageId}/${filename}`;
+          const downloadUrl = await this.storage.uploadBuffer(gcsKey, pdfBuffer, 'application/pdf');
+          reportDownload = { downloadUrl, filename, messageId };
+          this.logger.log(`SAP report PDF auto-generated and uploaded: ${gcsKey}`);
+        } catch (pdfError: any) {
+          this.logger.error(`Failed to auto-generate SAP report PDF: ${pdfError.message}`);
+        }
+      }
+
+      // Emit end with full thinking trace for persistent display
       emitter.emit('chunk', {
         type: 'end',
         messageId,
         sessionId,
+        mode,
+        provider,
         fullContent,
+        thinkingTrace: [...thinkingTrace],
         usage: {
           promptTokens: usageMetadata?.promptTokens || 0,
           completionTokens: usageMetadata?.completionTokens || 0,
         },
+        ...(reportDownload && { reportDownload }),
       } as StreamChunk);
 
       // Cleanup stream after a delay
@@ -641,24 +969,29 @@ export class GeminiChatService {
         streamData.cancelled = true;
       }
 
-      // Update message with error
-      await this.prisma.ai_messages.update({
-        where: { id: messageId },
-        data: {
-          isStreaming: false,
-          isComplete: false,
-          hasError: true,
-          errorMessage: error.message,
-        },
-      });
+      // Update message with error — wrapped in its own try/catch so the error
+      // chunk always reaches the frontend even if the DB write fails
+      try {
+        await this.prisma.ai_messages.update({
+          where: { id: messageId },
+          data: {
+            isStreaming: false,
+            isComplete: false,
+            hasError: true,
+            errorMessage: error.message?.substring(0, 1000),
+          },
+        });
+      } catch (dbError: any) {
+        this.logger.error(`Failed to persist error state for message ${messageId}: ${dbError.message}`);
+      }
 
-      // Emit error
+      // Always emit error to frontend
       emitter.emit('chunk', {
         type: 'error',
         messageId,
         sessionId,
         error: error.message,
-        message: 'Failed to generate response',
+        message: 'Failed to generate response. Please try again.',
       } as StreamChunk);
     } finally {
       if (heartbeatTimer) {
@@ -681,16 +1014,275 @@ export class GeminiChatService {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════
+  // Insight Phase Generation
+  // ═══════════════════════════════════════════════════════════
+
   /**
-   * Get current stream state (for reconnection after page reload)
+   * Generate question-specific insight messages for the thinking trace.
+   * Extracts keywords/topics from the question and builds contextual phases.
+   * Always returns at least 3 insights, up to 7 for deep modes.
+   */
+  private generateInsightPhases(
+    content: string,
+    mode: 'deep-think' | 'deep-research' | 'single' | 'council',
+  ): string[] {
+    const topic = this.extractTopic(content);
+    const keywords = this.extractKeywords(content);
+    const questionType = this.classifyQuestion(content);
+
+    if (mode === 'deep-think') {
+      return this.buildDeepThinkInsights(topic, keywords, questionType);
+    } else if (mode === 'deep-research') {
+      return this.buildDeepResearchInsights(topic, keywords);
+    } else {
+      return this.buildNormalInsights(topic, keywords);
+    }
+  }
+
+  private buildDeepThinkInsights(
+    topic: string,
+    keywords: string[],
+    questionType: string,
+  ): string[] {
+    const insights: string[] = [];
+    const t = topic || 'the question';
+
+    // 1. Always start with understanding
+    insights.push(`Analyzing ${t} — identifying core concepts...`);
+
+    // 2. Question-type-aware reasoning
+    if (questionType === 'how') {
+      insights.push(`Breaking down the process step by step...`);
+      insights.push(`Checking for common mistakes when approaching ${t}...`);
+    } else if (questionType === 'why') {
+      insights.push(`Examining underlying causes and mechanisms...`);
+      insights.push(`Considering whether the conventional explanation holds up...`);
+    } else if (questionType === 'compare') {
+      insights.push(`Identifying key differences and similarities...`);
+      insights.push(`Evaluating which factors matter most for ${t}...`);
+    } else if (questionType === 'solve') {
+      insights.push(`Working through the problem from first principles...`);
+      insights.push(`Verifying the solution using an alternative method...`);
+    } else {
+      insights.push(`Exploring what most explanations of ${t} get wrong...`);
+      insights.push(`Connecting ${t} to related concepts for deeper understanding...`);
+    }
+
+    // 3. Keyword-specific insights (only if we have meaningful keywords)
+    if (keywords.length >= 2) {
+      insights.push(`Analyzing the relationship between "${keywords[0]}" and "${keywords[1]}"...`);
+    } else if (keywords.length === 1) {
+      insights.push(`Looking deeper into "${keywords[0]}" — what's often overlooked...`);
+    }
+
+    // 4. Depth phases
+    insights.push(`Considering edge cases and common misconceptions...`);
+    insights.push(`Cross-checking reasoning for logical gaps...`);
+    insights.push(`Structuring the clearest explanation...`);
+
+    return insights;
+  }
+
+  private buildDeepResearchInsights(
+    topic: string,
+    keywords: string[],
+  ): string[] {
+    const insights: string[] = [];
+    const t = topic || 'the topic';
+
+    insights.push(`Formulating search queries for ${t}...`);
+    insights.push(`Searching: "${topic || 'the question'}" — finding primary sources...`);
+
+    if (keywords.length > 0) {
+      insights.push(`Searching: "${keywords[0]}" — looking for recent data and studies...`);
+    } else {
+      insights.push(`Rephrasing query — looking for recent data and studies...`);
+    }
+
+    if (keywords.length > 1) {
+      insights.push(`Searching: "${keywords[1]}" — checking academic and expert views...`);
+    } else {
+      insights.push(`Expanding search — checking academic and expert perspectives...`);
+    }
+
+    insights.push(`Searching for alternative viewpoints and counter-arguments...`);
+    insights.push(`Cross-referencing sources — verifying key facts...`);
+    insights.push(`Evaluating source credibility and recency...`);
+    insights.push(`Synthesizing findings into a comprehensive answer...`);
+
+    return insights;
+  }
+
+  private buildNormalInsights(
+    topic: string,
+    keywords: string[],
+  ): string[] {
+    const t = topic || 'your question';
+    const insights: string[] = [];
+
+    insights.push(`Understanding ${t}...`);
+
+    if (keywords.length > 0) {
+      insights.push(`Considering key aspects of "${keywords[0]}"...`);
+    } else {
+      insights.push(`Analyzing context and formulating approach...`);
+    }
+
+    insights.push(`Generating response...`);
+
+    return insights;
+  }
+
+  /**
+   * Extract a clean topic phrase from the user's message (max 50 chars).
+   */
+  private extractTopic(content: string): string {
+    if (!content || content.trim().length < 5) return '';
+
+    let text = content
+      .replace(/^(what|how|why|when|where|who|can you|could you|please|explain|tell me about|help me with|help me understand|i need help with|i want to know about|i'm curious about|i don't understand)\s+/i, '')
+      .replace(/^(is|are|do|does|did|was|were|will|would|should|could|can)\s+/i, '')
+      .trim();
+
+    // Take first meaningful phrase
+    const breakMatch = text.match(/^(.{8,50}?)[\.\?\!\n;—]/);
+    if (breakMatch) {
+      text = breakMatch[1].trim();
+    } else if (text.length > 50) {
+      text = text.substring(0, 50).replace(/\s+\S*$/, '').trim();
+    }
+
+    // Clean trailing filler words
+    text = text.replace(/\s+(the|a|an|is|are|of|in|to|for|and|or|with|by|it|this|that)$/i, '').trim();
+
+    return text.length >= 3 ? text : '';
+  }
+
+  /**
+   * Extract 1-3 meaningful keywords from the question (nouns/phrases the student cares about).
+   */
+  private extractKeywords(content: string): string[] {
+    if (!content || content.trim().length < 5) return [];
+
+    const stopWords = new Set([
+      'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+      'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+      'should', 'may', 'might', 'can', 'shall', 'must', 'need', 'to', 'of',
+      'in', 'for', 'on', 'with', 'at', 'by', 'from', 'as', 'into', 'about',
+      'between', 'through', 'during', 'before', 'after', 'above', 'below',
+      'and', 'but', 'or', 'not', 'no', 'if', 'then', 'than', 'so', 'too',
+      'very', 'just', 'also', 'how', 'what', 'why', 'when', 'where', 'who',
+      'which', 'that', 'this', 'these', 'those', 'it', 'its', 'my', 'your',
+      'me', 'i', 'you', 'we', 'they', 'he', 'she', 'him', 'her', 'them',
+      'explain', 'tell', 'help', 'understand', 'please', 'know', 'think',
+      'mean', 'work', 'make', 'get', 'use', 'find', 'give', 'say', 'want',
+      'does', 'difference', 'between', 'example', 'examples',
+    ]);
+
+    // Extract words, filter stop words, require 4+ chars for specificity
+    const words = content
+      .toLowerCase()
+      .replace(/[^\w\s'-]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length > 3 && !stopWords.has(w));
+
+    // Deduplicate and take top 3 by length (longer words tend to be more specific)
+    const unique = [...new Set(words)];
+    unique.sort((a, b) => b.length - a.length);
+
+    return unique.slice(0, 3);
+  }
+
+  /**
+   * Classify the question type to tailor insights.
+   */
+  private classifyQuestion(content: string): string {
+    const lower = content.toLowerCase().trim();
+    if (/^(how\s+(do|does|to|can|would|should)|steps|process|method)/i.test(lower)) return 'how';
+    if (/^(why|what\s+(cause|reason|makes))/i.test(lower)) return 'why';
+    if (/\b(compare|contrast|difference|vs\.?|versus|better)\b/i.test(lower)) return 'compare';
+    if (/\b(solve|calculate|compute|find the|evaluate|simplify|derive|prove)\b/i.test(lower)) return 'solve';
+    if (/^(what\s+is|what\s+are|define|meaning)/i.test(lower)) return 'define';
+    return 'general';
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // SAP Report Helpers
+  // ═══════════════════════════════════════════════════════════
+
+  private isSapProject(project: { title?: string | null }): boolean {
+    return /\bsap\b/i.test(project.title || '');
+  }
+
+  /** Check if the LLM response actually contains a report (not just a refusal). */
+  private looksLikeReport(content: string): boolean {
+    if (content.length < 500) return false;
+    const headingCount = (content.match(/^#{1,3}\s+/gm) || []).length;
+    return headingCount >= 3;
+  }
+
+  /**
+   * Detect whether the user message is asking for a report and return the
+   * relevant demo report to inject into the user prompt.
+   * Only the demo file for the requested role is sent — one file per request.
+   */
+  private getSapReportContext(userMessage: string): string | null {
+    const msg = userMessage.toLowerCase();
+    const isReportRequest =
+      /generate\s+report|create\s+report|make\s+report|build\s+report|report\s+for|generate\s+pdf/i.test(msg);
+    if (!isReportRequest) return null;
+
+    const parts: string[] = [
+      '[SAP REPORT GENERATION CONTEXT]\n',
+      'Generate a report following the EXACT structure, tone, formatting, and level of detail of the demo report below.',
+      'Replace the demo data with real data from the uploaded study materials / questions.\n',
+    ];
+
+    const isTeacher = /teacher/i.test(msg);
+    const isAdmin = /admin|administrator|principal/i.test(msg);
+    const isAll = /\ball\b/i.test(msg);
+
+    if (isAll) {
+      parts.push('=== STUDENT REPORT DEMO ===', DEMO_STUDENT_REPORT, '');
+      parts.push('=== TEACHER REPORT DEMO ===', DEMO_TEACHER_REPORT, '');
+      parts.push('=== ADMIN REPORT DEMO ===', DEMO_ADMIN_REPORT, '');
+    } else if (isTeacher) {
+      parts.push('=== TEACHER REPORT DEMO ===', DEMO_TEACHER_REPORT, '');
+    } else if (isAdmin) {
+      parts.push('=== ADMIN REPORT DEMO ===', DEMO_ADMIN_REPORT, '');
+    } else {
+      // Default to student
+      parts.push('=== STUDENT REPORT DEMO ===', DEMO_STUDENT_REPORT, '');
+    }
+
+    parts.push('[END OF SAP CONTEXT]');
+    return parts.join('\n');
+  }
+
+  /**
+   * Full stream state for reconnection — includes content, trace, mode, provider.
    */
   async getStreamState(streamId: string): Promise<{
     content: string;
     complete: boolean;
+    messageId?: string;
+    sessionId?: string;
+    mode?: StreamChunk['mode'];
+    thinkingTrace?: string[];
+    provider?: string;
   } | null> {
-    const streamData = this.activeStreams.get(streamId);
-    if (streamData) {
-      return streamData;
+    const sd = this.activeStreams.get(streamId);
+    if (sd) {
+      return {
+        content: sd.content,
+        complete: sd.complete,
+        messageId: sd.messageId,
+        sessionId: sd.sessionId,
+        mode: sd.mode,
+        thinkingTrace: [...sd.thinkingTrace],
+        provider: sd.provider,
+      };
     }
 
     // Check database for completed stream
@@ -702,10 +1294,124 @@ export class GeminiChatService {
       return {
         content: message.content || '',
         complete: message.isComplete,
+        messageId: message.id,
+        sessionId: message.sessionId,
       };
     }
 
     return null;
+  }
+
+  /**
+   * Find an active or recently-completed stream by messageId.
+   * Used when frontend knows the messageId (e.g. from a previous response) but not streamId.
+   */
+  async getStreamStateByMessageId(
+    messageId: string,
+    userId: string,
+  ): Promise<{
+    content: string;
+    complete: boolean;
+    messageId: string;
+    sessionId: string;
+    mode?: StreamChunk['mode'];
+    thinkingTrace?: string[];
+    provider?: string;
+    hasError?: boolean;
+    errorMessage?: string;
+  } | null> {
+    // Check in-memory active streams first
+    for (const [, sd] of this.activeStreams) {
+      if (sd.messageId === messageId) {
+        return {
+          content: sd.content,
+          complete: sd.complete,
+          messageId: sd.messageId,
+          sessionId: sd.sessionId,
+          mode: sd.mode,
+          thinkingTrace: [...sd.thinkingTrace],
+          provider: sd.provider,
+        };
+      }
+    }
+
+    // Fall back to database
+    const message = await this.prisma.ai_messages.findFirst({
+      where: { id: messageId },
+      include: { ai_chat_sessions: true },
+    });
+
+    if (!message || message.ai_chat_sessions.userId !== userId) {
+      return null;
+    }
+
+    return {
+      content: message.content || '',
+      complete: message.isComplete,
+      messageId: message.id,
+      sessionId: message.sessionId,
+      hasError: message.hasError,
+      errorMessage: message.errorMessage || undefined,
+    };
+  }
+
+  /**
+   * Get the most recent AI message for a session — used after page reload
+   * to check if there's an in-flight or recently-completed stream.
+   */
+  async getMostRecentAIMessage(
+    sessionId: string,
+    userId: string,
+  ): Promise<{
+    content: string;
+    complete: boolean;
+    messageId: string;
+    sessionId: string;
+    mode?: StreamChunk['mode'];
+    thinkingTrace?: string[];
+    provider?: string;
+    hasError?: boolean;
+    errorMessage?: string;
+    isStreaming?: boolean;
+  } | null> {
+    // Verify session ownership
+    const session = await this.prisma.ai_chat_sessions.findFirst({
+      where: { id: sessionId, userId },
+    });
+    if (!session) return null;
+
+    const message = await this.prisma.ai_messages.findFirst({
+      where: { sessionId, role: 'ASSISTANT' },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!message) return null;
+
+    // If still streaming in memory, return live state
+    if (message.streamId) {
+      const sd = this.activeStreams.get(message.streamId);
+      if (sd && !sd.complete) {
+        return {
+          content: sd.content,
+          complete: false,
+          messageId: sd.messageId,
+          sessionId: sd.sessionId,
+          mode: sd.mode,
+          thinkingTrace: [...sd.thinkingTrace],
+          provider: sd.provider,
+          isStreaming: true,
+        };
+      }
+    }
+
+    return {
+      content: message.content || '',
+      complete: message.isComplete,
+      messageId: message.id,
+      sessionId: message.sessionId,
+      hasError: message.hasError,
+      errorMessage: message.errorMessage || undefined,
+      isStreaming: message.isStreaming,
+    };
   }
 
   /**
@@ -796,6 +1502,7 @@ export class GeminiChatService {
     userId: string,
     file: Express.Multer.File,
     sessionId?: string,
+    readAloud?: boolean,
   ): Promise<StreamingResponse> {
     // Transcribe audio
     const transcription = await this.transcribeAudio(file);
@@ -831,10 +1538,14 @@ export class GeminiChatService {
     });
 
     // Send transcribed message for AI response
-    return this.sendMessageStreaming(userId, {
+    const result = await this.sendMessageStreaming(userId, {
       content: transcription,
       sessionId: session.id,
+      readAloud,
     });
+
+    // Attach audio metadata so the frontend can play back the user's audio
+    return { ...result, audioUrl, transcription };
   }
 
   /**
@@ -1076,18 +1787,72 @@ export class GeminiChatService {
 
   private async storeFile(file: Express.Multer.File, folder: string): Promise<string> {
     const ext = file.originalname?.split('.').pop() || 'bin';
-    const filename = `${uuidv4()}.${ext}`;
-    // TODO: Upload to cloud storage in production
-    return `/uploads/${folder}/${filename}`;
+    const key = `chat/${folder}/${uuidv4()}.${ext}`;
+    try {
+      await this.storage.uploadBuffer(key, file.buffer, file.mimetype);
+    } catch (error: any) {
+      this.logger.error(`GCS upload failed for ${file.originalname}: ${error.message}`);
+      throw new BadRequestException(`File upload failed: ${error.message}`);
+    }
+    return key;
+  }
+
+  /**
+   * Get a signed preview URL for a chat attachment
+   */
+  async getAttachmentPreviewUrl(
+    messageId: string,
+    attachmentIndex: number,
+    userId: string,
+  ): Promise<{ url: string; mimeType: string; name: string }> {
+    const message = await this.prisma.ai_messages.findFirst({
+      where: { id: messageId },
+      include: { ai_chat_sessions: { select: { userId: true } } },
+    });
+
+    if (!message || message.ai_chat_sessions.userId !== userId) {
+      throw new NotFoundException('Message not found');
+    }
+
+    const attachments = (message.attachments as any[]) || [];
+    if (attachmentIndex < 0 || attachmentIndex >= attachments.length) {
+      throw new NotFoundException('Attachment not found');
+    }
+
+    const attachment = attachments[attachmentIndex];
+    const key = attachment.url;
+
+    // If already a full URL, return directly
+    if (key.startsWith('http')) {
+      return { url: key, mimeType: attachment.mimeType, name: attachment.name };
+    }
+
+    const signedUrl = await this.storage.getSignedUrl(key, 3600);
+    return { url: signedUrl, mimeType: attachment.mimeType, name: attachment.name };
   }
 
   private async buildPromptParts(content: string, attachments?: Express.Multer.File[]): Promise<LlmContentPart[]> {
     const parts: LlmContentPart[] = [];
 
-    // Add attachments first (images/PDFs)
+    // Add attachments first (images/PDFs/text/docs)
     if (attachments) {
       for (const file of attachments) {
-        if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf') {
+        if (file.mimetype === 'text/plain') {
+          // Inject plain text content directly
+          const textContent = file.buffer.toString('utf-8');
+          parts.push({ text: `[File: ${file.originalname}]\n${textContent}` });
+        } else if (
+          file.mimetype === 'application/msword' ||
+          file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        ) {
+          // Word docs: send as inline data for Gemini to process
+          parts.push({
+            inlineData: {
+              mimeType: file.mimetype,
+              data: file.buffer.toString('base64'),
+            },
+          });
+        } else if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf') {
           parts.push({
             inlineData: {
               mimeType: file.mimetype,
@@ -1119,10 +1884,12 @@ export class GeminiChatService {
       take: 20,
     });
 
-    return messages.map((msg: any) => ({
-      role: (msg.role === 'USER' ? 'user' : 'assistant') as 'user' | 'assistant',
-      parts: [{ text: msg.content || '' }],
-    }));
+    return messages
+      .filter((msg: any) => msg.content && msg.content.trim() !== '')
+      .map((msg: any) => ({
+        role: (msg.role === 'USER' ? 'user' : 'assistant') as 'user' | 'assistant',
+        parts: [{ text: msg.content }],
+      }));
   }
 
   private async updateSessionAfterMessage(sessionId: string, userContent: string, aiContent: string): Promise<void> {
@@ -1267,6 +2034,11 @@ export class GeminiChatService {
       startedAtMs: now,
       lastActivityAtMs: now,
       cancelled: false,
+      messageId: aiMessage.id,
+      sessionId: session.id,
+      mode: 'council',
+      thinkingTrace: [],
+      provider: 'vertex', // council always uses Gemini-family
     });
 
     this.executeCouncil(
@@ -1313,7 +2085,36 @@ export class GeminiChatService {
     this.logger.log(`[COUNCIL] Starting GPAI-style multi-model council for session ${sessionId}`);
     this.logger.log(`[COUNCIL] Models: ${COUNCIL_MEMBERS.map((m) => `${m.label}=${m.modelName}`).join(', ')}`);
 
+    // ── Council thinking trace (accumulated across all phases) ──
+    const councilTrace: string[] = [];
+    const emitCouncilTrace = (message: string, extra?: Record<string, any>) => {
+      councilTrace.push(message);
+      // Keep activeStream in sync for reconnection
+      const sd = this.activeStreams.get(streamId);
+      if (sd) sd.thinkingTrace = [...councilTrace];
+      emitter.emit('chunk', {
+        type: 'status',
+        messageId,
+        sessionId,
+        mode: 'council' as const,
+        message,
+        thinkingTrace: [...councilTrace],
+        ...extra,
+      } as StreamChunk);
+    };
+
+    // Emit the initial 'start' chunk so the frontend knows it's council mode
+    emitter.emit('chunk', {
+      type: 'start',
+      messageId,
+      sessionId,
+      mode: 'council',
+      provider: 'vertex',
+      message: 'Starting AI Council deliberation...',
+    } as StreamChunk);
+
     // Notify frontend that council analysis is starting
+    emitCouncilTrace(`Assembling ${COUNCIL_MEMBERS.length} expert perspectives...`);
     emitter.emit('councilStatus', {
       type: 'councilAnalysisStart',
       sessionId,
@@ -1355,6 +2156,10 @@ export class GeminiChatService {
         };
 
         // Emit immediately when this member finishes (real-time, not batched)
+        emitCouncilTrace(
+          `${member.name} finished analysis (${parsed.confidence}% confidence)`,
+          { activeExpert: member.name },
+        );
         emitter.emit('councilMemberComplete', {
           memberId: member.id,
           memberName: member.name,
@@ -1381,6 +2186,7 @@ export class GeminiChatService {
           keyPoints: [],
         };
 
+        emitCouncilTrace(`${member.name} could not respond — continuing with other experts`);
         emitter.emit('councilMemberComplete', {
           memberId: member.id,
           memberName: member.name,
@@ -1400,6 +2206,7 @@ export class GeminiChatService {
 
     // ── Phase 2: Cross-review round (GPAI debate) ──
     this.logger.log(`[COUNCIL] Phase 2: Cross-review round starting...`);
+    emitCouncilTrace('All experts have responded — cross-reviewing each other\'s answers...');
     emitter.emit('councilStatus', {
       type: 'councilCrossReviewStart',
       sessionId,
@@ -1408,11 +2215,13 @@ export class GeminiChatService {
 
     await this.runCrossReview(memberResponses, userContent, sessionSubject);
     this.logger.log(`[COUNCIL] Cross-review complete.`);
+    emitCouncilTrace('Cross-review complete — experts verified each other\'s work');
 
     // ── Phase 3: Synthesis with strongest model ──
     this.logger.log(
       `[COUNCIL] Phase 3: Synthesis via ${SYNTHESIZER_MODEL} — weaving ${memberResponses.length} perspectives...`,
     );
+    emitCouncilTrace('Synthesizing the best answer from all perspectives...');
     emitter.emit('councilSynthesisStart', { sessionId, messageId });
 
     const synthesizerPrompt = this.systemInstructions.getSynthesizerPrompt(
@@ -1448,16 +2257,18 @@ export class GeminiChatService {
       { role: 'user', parts: promptParts },
     ];
 
+    const councilProvider = this.getProviderForTask('council');
     const result = await this.withTimeout(
-      this.llm.generate(this.getActiveProvider(), messages, {
-        model: member.modelName,
+      this.llm.generateWithFallback(messages, {
         systemPrompt,
         generationConfig: {
           temperature: member.config.temperature,
           maxOutputTokens: member.config.maxOutputTokens,
         },
+        models: [member.modelName],
+        provider: councilProvider,
       }),
-      45000,
+      60000,
       `Council member ${member.name} (${member.modelName}) timed out`,
     );
 
@@ -1486,16 +2297,18 @@ export class GeminiChatService {
           { role: 'user', parts: [{ text: 'Please review the other experts\' responses.' }] },
         ];
 
+        const councilProvider = this.getProviderForTask('council');
         const result = await this.withTimeout(
-          this.llm.generate(this.getActiveProvider(), messages, {
-            model: member.modelName,
+          this.llm.generateWithFallback(messages, {
             systemPrompt: reviewSystemPrompt,
             generationConfig: {
               temperature: 0.3,
               maxOutputTokens: member.config.reviewMaxTokens,
             },
+            models: [member.modelName],
+            provider: councilProvider,
           }),
-          20000,
+          30000,
           `Cross-review by ${member.name} timed out`,
         );
 
@@ -1532,24 +2345,34 @@ export class GeminiChatService {
     this.logger.log(
       `[COUNCIL] Synthesizer model: ${SYNTHESIZER_MODEL} — weaving ${memberResponses.length} expert perspectives...`,
     );
+    // NOTE: Do NOT emit a 'start' chunk here — the council start was already
+    // emitted by executeCouncil. Emitting another 'start' resets the frontend
+    // state (clears thinkingTrace). Instead emit a status update.
+    const sd = this.activeStreams.get(streamId);
     emitter.emit('chunk', {
-      type: 'start',
+      type: 'status',
       messageId,
       sessionId,
-      message: 'Synthesizing perspectives...',
+      mode: 'council',
+      message: 'Generating final answer from expert consensus...',
+      thinkingTrace: sd ? [...sd.thinkingTrace, 'Generating final answer from expert consensus...'] : [],
     } as StreamChunk);
+    if (sd) sd.thinkingTrace = [...(sd.thinkingTrace || []), 'Generating final answer from expert consensus...'];
 
     const messages: LlmMessage[] = [
       { role: 'user', parts: [{ text: 'Please synthesize the perspectives above into a complete answer.' }] },
     ];
 
-    const llmStream = await this.llm.stream(this.getActiveProvider(), messages, {
-      model: SYNTHESIZER_MODEL,
+    const councilProvider = this.getProviderForTask('council');
+    // Use streamWithFallback so synthesis survives provider failures
+    const llmStream = await this.llm.streamWithFallback(messages, {
       systemPrompt: synthesizerSystemPrompt,
       generationConfig: {
         temperature: SYNTHESIZER_CONFIG.temperature,
         maxOutputTokens: SYNTHESIZER_CONFIG.maxOutputTokens,
       },
+      models: [SYNTHESIZER_MODEL],
+      provider: councilProvider,
     });
 
     let fullContent = '';
@@ -1600,11 +2423,15 @@ export class GeminiChatService {
       `[COUNCIL] Synthesis complete (${fullContent.length} chars). Council response delivered.`,
     );
 
+    const finalSD = this.activeStreams.get(streamId);
     emitter.emit('chunk', {
       type: 'end',
       messageId,
       sessionId,
+      mode: 'council',
       fullContent,
+      thinkingTrace: finalSD ? [...finalSD.thinkingTrace] : [],
+      provider: finalSD?.provider || 'vertex',
     } as StreamChunk);
 
     setTimeout(() => this.activeStreams.delete(streamId), 60000);

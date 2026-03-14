@@ -7,19 +7,28 @@ import {
   UseGuards,
   Get,
   Param,
+  Req,
+  Res,
 } from '@nestjs/common';
+import { Request, Response } from 'express';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+import { ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { AuthResponseDto, RefreshTokenDto, AcceptInvitationDto } from './dto/auth-response.dto';
 import { Public } from './decorators/public.decorator';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { GoogleAuthGuard } from './guards/google-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
+import { GoogleUser } from './strategies/google.strategy';
 
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly configService: ConfigService,
+  ) {}
 
   @Public()
   @Post('login')
@@ -76,6 +85,33 @@ export class AuthController {
   @ApiOperation({ summary: 'Get current user full profile (alias)' })
   getMe(@CurrentUser() user: any) {
     return this.authService.getFullProfile(user.id);
+  }
+
+  // ============ Google OAuth ============
+
+  @Public()
+  @Get('google')
+  @UseGuards(GoogleAuthGuard)
+  @ApiOperation({ summary: 'Initiate Google OAuth login (redirects to Google)' })
+  googleLogin() {
+    // Guard handles redirect to Google
+  }
+
+  @Public()
+  @Get('google/callback')
+  @UseGuards(GoogleAuthGuard)
+  @ApiOperation({ summary: 'Google OAuth callback — redirects to frontend with tokens' })
+  async googleCallback(@Req() req: Request, @Res() res: Response) {
+    const googleUser = req.user as GoogleUser;
+    const result = await this.authService.googleLogin(googleUser);
+
+    // Redirect to frontend with tokens as query params
+    const frontendUrl = this.configService.get<string>('FRONTEND_URL', 'http://localhost:3000');
+    const params = new URLSearchParams({
+      accessToken: result.tokens.accessToken,
+      refreshToken: result.tokens.refreshToken,
+    });
+    res.redirect(`${frontendUrl}/auth/google/callback?${params.toString()}`);
   }
 
   @UseGuards(JwtAuthGuard)

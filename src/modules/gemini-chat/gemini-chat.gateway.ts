@@ -136,7 +136,15 @@ export class GeminiChatGateway implements OnGatewayConnection, OnGatewayDisconne
   @SubscribeMessage('sendMessage')
   async handleSendMessage(
     @ConnectedSocket() socket: AuthenticatedSocket,
-    @MessageBody() data: { content: string; sessionId?: string },
+    @MessageBody() data: {
+      content: string;
+      sessionId?: string;
+      deepThink?: boolean;
+      deepResearch?: boolean;
+      council?: boolean;
+      projectId?: string;
+      readAloud?: boolean;
+    },
   ) {
     if (!socket.user) {
       return { error: 'Not authenticated' };
@@ -145,11 +153,21 @@ export class GeminiChatGateway implements OnGatewayConnection, OnGatewayDisconne
     try {
       const result = await this.geminiChatService.sendMessageStreaming(
         socket.user.id,
-        { content: data.content, sessionId: data.sessionId, stream: true },
+        {
+          content: data.content,
+          sessionId: data.sessionId,
+          stream: true,
+          deepThink: data.deepThink,
+          deepResearch: data.deepResearch,
+          council: data.council,
+          projectId: data.projectId,
+          readAloud: data.readAloud,
+        },
       );
 
       // Forward stream chunks to this user
       result.emitter.on('chunk', (chunk: StreamChunk) => {
+        if (data.readAloud) chunk.readAloud = true;
         this.server.to(`user:${socket.user!.id}`).emit('streamChunk', chunk);
         this.server.to(`ai:${result.sessionId}`).emit('streamChunk', chunk);
       });
@@ -214,6 +232,55 @@ export class GeminiChatGateway implements OnGatewayConnection, OnGatewayDisconne
   ) {
     const state = await this.geminiChatService.getStreamState(streamId);
     return state || { error: 'Stream not found' };
+  }
+
+  /**
+   * Reconnect to a stream after page reload.
+   * Frontend sends { messageId } or { sessionId } and gets back the current
+   * stream state (content so far, thinkingTrace, mode, completion status).
+   * If the stream is still active, re-subscribes for future chunks.
+   */
+  @SubscribeMessage('reconnectStream')
+  async handleReconnectStream(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data: { messageId?: string; sessionId?: string },
+  ) {
+    if (!socket.user) {
+      return { error: 'Not authenticated' };
+    }
+
+    try {
+      let state: any = null;
+
+      if (data.messageId) {
+        state = await this.geminiChatService.getStreamStateByMessageId(
+          data.messageId,
+          socket.user.id,
+        );
+      } else if (data.sessionId) {
+        state = await this.geminiChatService.getMostRecentAIMessage(
+          data.sessionId,
+          socket.user.id,
+        );
+      }
+
+      if (!state) {
+        return { error: 'No active stream found' };
+      }
+
+      // Re-join the session room so future chunks are delivered
+      if (state.sessionId) {
+        socket.join(`ai:${state.sessionId}`);
+      }
+
+      return {
+        success: true,
+        ...state,
+      };
+    } catch (error: any) {
+      this.logger.error(`Reconnect error: ${error.message}`);
+      return { error: error.message };
+    }
   }
 
   @SubscribeMessage('typing')

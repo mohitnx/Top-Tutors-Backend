@@ -36,6 +36,10 @@ coverage/
 prisma/*.db
 prisma/*.db-journal
 
+# GCP service account keys
+*-service-account*.json
+gcs-*.json
+
 # Misc
 *.tsbuildinfo
 .eslintcache

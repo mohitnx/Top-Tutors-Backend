@@ -65,6 +65,22 @@ export class ClassSectionsController {
     return this.classSectionsService.update(id, dto);
   }
 
+  @Get('available-students')
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN', 'ADMINISTRATOR')
+  @ApiOperation({ summary: 'List students not assigned to any section [ADMIN, ADMINISTRATOR]' })
+  getAvailableStudents(@CurrentUser() user: any) {
+    return this.classSectionsService.getAvailableStudents(user);
+  }
+
+  @Get('available-teachers')
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN', 'ADMINISTRATOR')
+  @ApiOperation({ summary: 'List school teachers with their section assignments [ADMIN, ADMINISTRATOR]' })
+  getSchoolTeachers(@CurrentUser() user: any) {
+    return this.classSectionsService.getSchoolTeachers(user);
+  }
+
   @Post(':id/students')
   @UseGuards(RolesGuard)
   @Roles('ADMIN', 'ADMINISTRATOR')
@@ -90,5 +106,16 @@ export class ClassSectionsController {
   @ApiOperation({ summary: 'Assign teacher to section for a subject [ADMIN, ADMINISTRATOR]' })
   assignTeacher(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AssignTeacherDto) {
     return this.classSectionsService.assignTeacher(id, dto);
+  }
+
+  @Delete(':id/teachers/:teacherId')
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN', 'ADMINISTRATOR')
+  @ApiOperation({ summary: 'Remove teacher from section [ADMIN, ADMINISTRATOR]' })
+  removeTeacher(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('teacherId', ParseUUIDPipe) teacherId: string,
+  ) {
+    return this.classSectionsService.removeTeacher(id, teacherId);
   }
 }

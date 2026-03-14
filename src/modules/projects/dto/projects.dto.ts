@@ -126,6 +126,21 @@ export class SendProjectMessageDto {
   @IsOptional()
   @IsUUID()
   sessionId?: string;
+
+  @ApiPropertyOptional({ description: 'Enable deep thinking mode (extended step-by-step reasoning)' })
+  @IsOptional()
+  @IsBoolean()
+  deepThink?: boolean;
+
+  @ApiPropertyOptional({ description: 'Enable deep research mode (web search + source synthesis)' })
+  @IsOptional()
+  @IsBoolean()
+  deepResearch?: boolean;
+
+  @ApiPropertyOptional({ description: 'Enable council mode (multi-expert analysis)' })
+  @IsOptional()
+  @IsBoolean()
+  councilMode?: boolean;
 }
 
 export class ProjectMessageFeedbackDto {
@@ -153,6 +168,16 @@ export class GenerateQuizDto {
   @IsOptional()
   @IsEnum(['EASY', 'MEDIUM', 'HARD'])
   difficulty?: string = 'MEDIUM';
+
+  @ApiPropertyOptional({ description: 'Session ID to scope quiz to session resources only' })
+  @IsOptional()
+  @IsUUID()
+  sessionId?: string;
+
+  @ApiPropertyOptional({ description: 'Generate downloadable PDF', default: false })
+  @IsOptional()
+  @IsBoolean()
+  generatePdf?: boolean;
 }
 
 // ============ Response Types ============
@@ -173,6 +198,7 @@ export interface ProjectResponse {
 export interface ProjectResourceResponse {
   id: string;
   projectId: string;
+  sessionId: string | null;
   type: string;
   title: string;
   url: string | null;
@@ -189,6 +215,8 @@ export interface ProjectChatSessionResponse {
   lastMessageAt: Date;
   createdAt: Date;
   messageCount?: number;
+  /** 'project' = native project chat, 'llm-chat' = linked from main LLM chat */
+  source?: 'project' | 'llm-chat';
   lastMessage?: {
     content: string | null;
     role: string;
@@ -211,7 +239,7 @@ export interface ProjectMessageResponse {
 }
 
 export interface ProjectStreamChunk {
-  type: 'start' | 'chunk' | 'heartbeat' | 'end' | 'error';
+  type: 'start' | 'chunk' | 'heartbeat' | 'end' | 'error' | 'status';
   messageId: string;
   sessionId: string;
   projectId: string;
@@ -223,5 +251,16 @@ export interface ProjectStreamChunk {
   usage?: {
     promptTokens: number;
     completionTokens: number;
+  };
+
+  /**
+   * SAP Report: auto-generated PDF download info.
+   * Present only on the 'end' chunk when a SAP report was generated.
+   * Frontend should render a download button with href = downloadUrl.
+   */
+  reportDownload?: {
+    downloadUrl: string;
+    filename: string;
+    messageId: string;
   };
 }

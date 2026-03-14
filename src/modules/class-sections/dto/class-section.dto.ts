@@ -3,7 +3,7 @@ import { Subject } from '@prisma/client';
 import { IsArray, IsEnum, IsOptional, IsString, IsUUID } from 'class-validator';
 
 export class CreateClassSectionDto {
-  @ApiProperty({ example: 'Grade 10 - Section D' })
+  @ApiProperty({ example: 'A', description: 'Section name (e.g. A, B, C)' })
   @IsString()
   name: string;
 
@@ -12,10 +12,9 @@ export class CreateClassSectionDto {
   @IsUUID()
   schoolId?: string;
 
-  @ApiPropertyOptional({ example: 'Grade 10' })
-  @IsOptional()
+  @ApiProperty({ example: '10', description: 'Grade level (e.g. 10, 11, 12)' })
   @IsString()
-  grade?: string;
+  grade: string;
 }
 
 export class UpdateClassSectionDto {

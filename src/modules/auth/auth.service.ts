@@ -11,6 +11,8 @@ import { LoginDto } from './dto/login.dto';
 import { Role } from '@prisma/client';
 import { AuthResponseDto, TokensDto, AcceptInvitationDto } from './dto/auth-response.dto';
 import { JwtPayload } from './strategies/jwt.strategy';
+import { GoogleUser } from './strategies/google.strategy';
+import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class AuthService {
@@ -212,6 +214,79 @@ export class AuthService {
           code: user.administeredSchool.code,
         },
       }),
+    };
+  }
+
+  async googleLogin(googleUser: GoogleUser): Promise<AuthResponseDto> {
+    const normalizedEmail = this.normalizeEmail(googleUser.email);
+
+    // Find existing user by googleId or email
+    let user = await this.prisma.user.findFirst({
+      where: {
+        OR: [
+          { googleId: googleUser.googleId },
+          { email: normalizedEmail },
+        ],
+      },
+      include: { students: true },
+    });
+
+    if (user) {
+      // Link googleId if not set, activate if needed
+      if (!user.googleId || !user.isActive) {
+        user = await this.prisma.user.update({
+          where: { id: user.id },
+          data: {
+            googleId: googleUser.googleId,
+            isActive: true,
+            avatar: user.avatar || googleUser.avatar,
+            invitationToken: null,
+            invitationExpiresAt: null,
+          },
+          include: { students: true },
+        });
+      }
+    } else {
+      // Create new STUDENT user (no school affiliation)
+      const newUser = await this.prisma.user.create({
+        data: {
+          email: normalizedEmail,
+          name: googleUser.name || normalizedEmail.split('@')[0],
+          googleId: googleUser.googleId,
+          role: Role.STUDENT,
+          isActive: true,
+          avatar: googleUser.avatar,
+        },
+      });
+
+      // Create student profile (no school affiliation)
+      await this.prisma.students.create({
+        data: {
+          id: uuidv4(),
+          userId: newUser.id,
+          updatedAt: new Date(),
+        },
+      });
+
+      user = await this.prisma.user.findUnique({
+        where: { id: newUser.id },
+        include: { students: true },
+      });
+    }
+
+    const schoolId = user!.students?.schoolId ?? null;
+    const tokens = await this.generateTokens(user!.id, user!.email, user!.role, schoolId);
+
+    return {
+      user: {
+        id: user!.id,
+        email: user!.email,
+        name: user!.name,
+        role: user!.role,
+        avatar: user!.avatar ?? null,
+        schoolId,
+      },
+      tokens,
     };
   }
 

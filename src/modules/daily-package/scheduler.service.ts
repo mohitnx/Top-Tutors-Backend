@@ -3,7 +3,8 @@ import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
 import { StorageService } from '../storage/storage.service';
-import { PdfGenerationService } from './pdf-generation.service';
+import { PdfGenerationService, DayQuestions } from './pdf-generation.service';
+import { AnsweredQuestion } from './answer-generation.service';
 import { Subject } from '@prisma/client';
 
 @Injectable()
@@ -117,8 +118,42 @@ export class SchedulerService {
       const [sectionId, subject] = key.split('::');
 
       try {
-        // Generate weekly summary PDF
-        const weeklyPdf = await this.pdfGen.mergePdfs([]);
+        // Query all extracted questions from this week's daily uploads
+        const uploadIds = pkgs.map((p) => p.uploadId);
+        const rawQuestions = await this.prisma.extracted_questions.findMany({
+          where: { uploadId: { in: uploadIds } },
+          include: { daily_uploads: { select: { createdAt: true } } },
+          orderBy: { daily_uploads: { createdAt: 'asc' } },
+        });
+
+        // Group questions by day
+        const dayMap = new Map<string, DayQuestions>();
+        for (const q of rawQuestions) {
+          const dayKey = q.daily_uploads.createdAt.toISOString().slice(0, 10);
+          if (!dayMap.has(dayKey)) {
+            dayMap.set(dayKey, { date: q.daily_uploads.createdAt, questions: [] });
+          }
+          dayMap.get(dayKey)!.questions.push({
+            text: q.text,
+            frequency: q.frequency,
+            rankType: q.rankType as AnsweredQuestion['rankType'],
+            rankPosition: q.rankPosition,
+            shortAnswer: q.shortAnswer ?? '',
+            fullAnswer: q.fullAnswer ?? '',
+            realLifeExample: q.realLifeExample ?? '',
+            similarQuestions: [],
+          });
+        }
+
+        const questionsByDay = Array.from(dayMap.values());
+
+        // Generate weekly PDF from real question data
+        const weeklyPdf = await this.pdfGen.generateWeeklyPdf(
+          questionsByDay,
+          subject as Subject,
+          weekStart,
+          weekEnd,
+        );
         const pdfKey = `packages/weekly/${sectionId}/${subject}/${weekStart.toISOString().slice(0, 10)}.pdf`;
         const pdfUrl = await this.storage.uploadBuffer(pdfKey, weeklyPdf, 'application/pdf');
 

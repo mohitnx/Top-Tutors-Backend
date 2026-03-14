@@ -23,10 +23,19 @@ export class StorageService {
       return;
     }
 
-    // Supports both key-file auth (local dev) and Application Default Credentials (Cloud Run/GKE)
+    // Auth priority: key file (local dev) → inline JSON credentials (Render/CI) → ADC (Cloud Run/GKE)
+    const credentialsJson = config.get<string>('GCS_CREDENTIALS_JSON', '');
     const storageOptions: Record<string, any> = {};
     if (projectId) storageOptions.projectId = projectId;
-    if (keyFilename) storageOptions.keyFilename = keyFilename;
+    if (keyFilename) {
+      storageOptions.keyFilename = keyFilename;
+    } else if (credentialsJson) {
+      try {
+        storageOptions.credentials = JSON.parse(credentialsJson);
+      } catch {
+        this.logger.error('GCS_CREDENTIALS_JSON is not valid JSON');
+      }
+    }
 
     this.storage = new Storage(storageOptions);
     this.bucket = this.storage.bucket(this.bucketName);

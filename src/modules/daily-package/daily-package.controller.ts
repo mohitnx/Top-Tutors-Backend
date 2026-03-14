@@ -67,4 +67,12 @@ export class DailyPackageController {
   async getUploadStatus(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any) {
     return this.dailyPackageService.getUploadDetails(id, user.id, user.role, user.administeredSchoolId);
   }
+
+  @Post('uploads/:id/retry')
+  @UseGuards(RolesGuard)
+  @Roles('TEACHER', 'ADMINISTRATOR')
+  @ApiOperation({ summary: 'Retry a failed upload [TEACHER, ADMINISTRATOR]' })
+  async retryUpload(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any) {
+    return this.dailyPackageService.retryUpload(id, user.id, user.role, user.administeredSchoolId);
+  }
 }

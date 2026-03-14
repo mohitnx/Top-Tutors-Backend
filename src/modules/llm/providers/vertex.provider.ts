@@ -11,19 +11,24 @@ import {
 } from '../llm.types';
 import { LlmProvider } from '../../prompts/types/prompt.types';
 
+/**
+ * Paid Vertex AI provider — uses VERTEX_AI_API_KEY for paid-tier
+ * Gemini models with web search and grounding enabled by default.
+ * Falls through to the free GeminiProvider when this key is absent.
+ */
 @Injectable()
-export class GeminiProvider implements ILlmProvider {
-  readonly name: LlmProvider = 'gemini';
-  private readonly logger = new Logger(GeminiProvider.name);
+export class VertexProvider implements ILlmProvider {
+  readonly name: LlmProvider = 'vertex';
+  private readonly logger = new Logger(VertexProvider.name);
   private genAI: GoogleGenerativeAI | null = null;
 
   constructor(private readonly config: ConfigService) {
-    const apiKey = config.get<string>('NEW_GEMINI_KEY', '');
+    const apiKey = config.get<string>('VERTEX_AI_API_KEY', '');
     if (apiKey) {
       this.genAI = new GoogleGenerativeAI(apiKey.trim());
-      this.logger.log('Gemini provider initialized');
+      this.logger.log('Vertex AI provider initialized (paid tier)');
     } else {
-      this.logger.warn('NEW_GEMINI_KEY not set — Gemini provider unavailable');
+      this.logger.warn('VERTEX_AI_API_KEY not set — Vertex provider unavailable');
     }
   }
 
@@ -58,7 +63,7 @@ export class GeminiProvider implements ILlmProvider {
 
     const iterator = (result.stream as any)[Symbol.asyncIterator]?.();
     if (!iterator || typeof iterator.next !== 'function') {
-      throw new Error('Gemini streaming iterator not available');
+      throw new Error('Vertex AI streaming iterator not available');
     }
 
     const stream: LlmStream = {
@@ -100,7 +105,7 @@ export class GeminiProvider implements ILlmProvider {
   // ── Helpers ──
 
   private getModel(messages: LlmMessage[], options: LlmCallOptions) {
-    if (!this.genAI) throw new Error('Gemini provider not configured');
+    if (!this.genAI) throw new Error('Vertex AI provider not configured');
 
     const systemMsg = messages.find((m) => m.role === 'system');
     const systemText = options.systemPrompt || systemMsg?.parts?.[0]?.text;
@@ -125,8 +130,8 @@ export class GeminiProvider implements ILlmProvider {
       };
     }
 
-    // Enable Google Search grounding for real-time information
-    if (options.webSearch) {
+    // Always enable Google Search grounding on paid tier (can be overridden via webSearch: false)
+    if (options.webSearch !== false) {
       modelOptions.tools = [{ googleSearch: {} } as any];
     }
 

@@ -49,7 +49,7 @@ import {
 @ApiTags('projects')
 @Controller('projects')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('STUDENT')
+@Roles('STUDENT', 'TEACHER', 'TUTOR')
 @ApiBearerAuth()
 export class ProjectsController {
   private readonly logger = new Logger(ProjectsController.name);
@@ -133,17 +133,20 @@ export class ProjectsController {
           'image/gif',
           'image/webp',
           'application/pdf',
+          'text/plain',
+          'application/msword',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         ];
         if (allowedMimes.includes(file.mimetype)) {
           cb(null, true);
         } else {
-          cb(new BadRequestException('Only images and PDFs are allowed'), false);
+          cb(new BadRequestException('Only images, PDFs, text files, and Word documents are allowed'), false);
         }
       },
     }),
   )
   @ApiConsumes('multipart/form-data')
-  @ApiOperation({ summary: 'Upload a resource (PDF or image) to a project' })
+  @ApiOperation({ summary: 'Upload a resource (PDF, image, text, or Word document) to a project' })
   @ApiParam({ name: 'projectId' })
   @ApiBody({
     schema: {
@@ -178,6 +181,19 @@ export class ProjectsController {
     return this.projectsService.getResources(projectId, user.id);
   }
 
+  @Get(':projectId/resources/:resourceId/preview')
+  @ApiOperation({ summary: 'Get a temporary preview URL for a resource' })
+  @ApiParam({ name: 'projectId' })
+  @ApiParam({ name: 'resourceId' })
+  @ApiResponse({ status: 200, description: 'Signed preview URL (valid for 1 hour)' })
+  async getResourcePreview(
+    @CurrentUser() user: any,
+    @Param('projectId') projectId: string,
+    @Param('resourceId') resourceId: string,
+  ) {
+    return this.projectsService.getResourcePreviewUrl(projectId, resourceId, user.id);
+  }
+
   @Delete(':projectId/resources/:resourceId')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Delete a resource from a project' })
@@ -190,6 +206,60 @@ export class ProjectsController {
     @Param('resourceId') resourceId: string,
   ) {
     return this.projectsService.deleteResource(projectId, resourceId, user.id);
+  }
+
+  // ============ Session Resources ============
+
+  @Post(':projectId/chat/sessions/:sessionId/resources')
+  @HttpCode(HttpStatus.CREATED)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 20 * 1024 * 1024 },
+      fileFilter: (req, file, cb) => {
+        const allowedMimes = [
+          'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
+          'application/pdf',
+          'text/plain',
+          'application/msword',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ];
+        if (allowedMimes.includes(file.mimetype)) {
+          cb(null, true);
+        } else {
+          cb(new BadRequestException('Only images, PDFs, text files, and Word documents are allowed'), false);
+        }
+      },
+    }),
+  )
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Upload a resource to a specific chat session' })
+  @ApiParam({ name: 'projectId' })
+  @ApiParam({ name: 'sessionId' })
+  @ApiResponse({ status: 201, description: 'Session resource uploaded' })
+  async addSessionResource(
+    @CurrentUser() user: any,
+    @Param('projectId') projectId: string,
+    @Param('sessionId') sessionId: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Body() dto: AddResourceDto,
+  ) {
+    if (!file || !file.buffer || file.buffer.length === 0) {
+      throw new BadRequestException('No file provided');
+    }
+    return this.projectsService.addResource(projectId, user.id, dto.title, file, sessionId);
+  }
+
+  @Get(':projectId/chat/sessions/:sessionId/resources')
+  @ApiOperation({ summary: 'List resources for a session (includes project-level + session-level)' })
+  @ApiParam({ name: 'projectId' })
+  @ApiParam({ name: 'sessionId' })
+  @ApiResponse({ status: 200, description: 'List of resources' })
+  async getSessionResources(
+    @CurrentUser() user: any,
+    @Param('projectId') projectId: string,
+    @Param('sessionId') sessionId: string,
+  ) {
+    return this.projectsService.getResources(projectId, user.id, sessionId);
   }
 
   // ============ Chat Sessions ============
@@ -259,11 +329,7 @@ export class ProjectsController {
     @Body() dto: SendProjectMessageDto,
   ) {
     const result = await this.projectChatService.sendMessage(projectId, user.id, dto);
-
-    // Forward stream chunks to WebSocket
-    result.emitter.on('chunk', (chunk) => {
-      this.projectsGateway.emitStreamChunk(user.id, chunk);
-    });
+    this.forwardStreamEvents(result, user.id);
 
     return {
       messageId: result.messageId,
@@ -304,6 +370,17 @@ export class ProjectsController {
       }
     });
 
+    // Forward council events via SSE too
+    result.emitter.on('councilStatus', (data) => {
+      res.write(`data: ${JSON.stringify({ ...data, event: 'councilStatus' })}\n\n`);
+    });
+    result.emitter.on('councilMemberComplete', (data) => {
+      res.write(`data: ${JSON.stringify({ ...data, event: 'councilMemberComplete' })}\n\n`);
+    });
+    result.emitter.on('councilSynthesisStart', (data) => {
+      res.write(`data: ${JSON.stringify({ ...data, event: 'councilSynthesisStart' })}\n\n`);
+    });
+
     res.on('close', () => {
       result.emitter.removeAllListeners();
     });
@@ -322,11 +399,14 @@ export class ProjectsController {
           'image/gif',
           'image/webp',
           'application/pdf',
+          'text/plain',
+          'application/msword',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         ];
         if (allowedMimes.includes(file.mimetype)) {
           cb(null, true);
         } else {
-          cb(new BadRequestException('Only images and PDFs are allowed'), false);
+          cb(new BadRequestException('Only images, PDFs, text files, and Word documents are allowed'), false);
         }
       },
     }),
@@ -362,9 +442,7 @@ export class ProjectsController {
       files,
     );
 
-    result.emitter.on('chunk', (chunk) => {
-      this.projectsGateway.emitStreamChunk(user.id, chunk);
-    });
+    this.forwardStreamEvents(result, user.id);
 
     return {
       messageId: result.messageId,
@@ -426,9 +504,7 @@ export class ProjectsController {
       dto,
     );
 
-    result.emitter.on('chunk', (chunk) => {
-      this.projectsGateway.emitStreamChunk(user.id, chunk);
-    });
+    this.forwardStreamEvents(result, user.id);
 
     return {
       messageId: result.messageId,
@@ -437,5 +513,70 @@ export class ProjectsController {
       streaming: true,
       message: 'Quiz generation streaming via WebSocket',
     };
+  }
+
+  @Post(':projectId/quiz/generate/pdf')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Generate a quiz PDF for download' })
+  @ApiParam({ name: 'projectId' })
+  @ApiBody({ type: GenerateQuizDto })
+  @ApiResponse({ status: 200, description: 'Quiz PDF file' })
+  async generateQuizPdf(
+    @CurrentUser() user: any,
+    @Param('projectId') projectId: string,
+    @Body() dto: GenerateQuizDto,
+    @Res() res: Response,
+  ) {
+    const { buffer, filename } = await this.projectChatService.generateQuizPdf(
+      projectId,
+      user.id,
+      dto,
+    );
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', buffer.length);
+    res.end(buffer);
+  }
+
+  @Post(':projectId/report/pdf/:messageId')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Download a SAP report as PDF from an AI message' })
+  @ApiParam({ name: 'projectId' })
+  @ApiParam({ name: 'messageId', description: 'The AI message ID containing the generated report' })
+  @ApiResponse({ status: 200, description: 'SAP Report PDF file' })
+  async generateSapReportPdf(
+    @CurrentUser() user: any,
+    @Param('projectId') projectId: string,
+    @Param('messageId') messageId: string,
+    @Res() res: Response,
+  ) {
+    const { buffer, filename } = await this.projectChatService.generateSapReportPdf(
+      projectId,
+      messageId,
+      user.id,
+    );
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', buffer.length);
+    res.end(buffer);
+  }
+
+  // ============ Internal Helpers ============
+
+  private forwardStreamEvents(result: { emitter: any; sessionId: string }, userId: string) {
+    result.emitter.on('chunk', (chunk: any) => {
+      this.projectsGateway.emitStreamChunk(userId, result.sessionId, chunk);
+    });
+    result.emitter.on('councilStatus', (data: any) => {
+      this.projectsGateway.emitCouncilStatus(userId, result.sessionId, data);
+    });
+    result.emitter.on('councilMemberComplete', (data: any) => {
+      this.projectsGateway.emitCouncilMemberComplete(userId, result.sessionId, data);
+    });
+    result.emitter.on('councilSynthesisStart', (data: any) => {
+      this.projectsGateway.emitCouncilSynthesisStart(userId, result.sessionId, data);
+    });
   }
 }

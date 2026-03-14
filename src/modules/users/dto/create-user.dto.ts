@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsEmail, IsString, IsOptional, IsEnum, IsUUID, MaxLength } from 'class-validator';
-import { Role } from '@prisma/client';
+import { Role, Subject } from '@prisma/client';
 
 export class CreateUserDto {
   @ApiProperty({ example: 'jane@school.edu', description: 'User email address' })
@@ -21,11 +21,27 @@ export class CreateUserDto {
 
   @ApiPropertyOptional({
     example: 'uuid-of-school',
-    description: 'Required if role=ADMINISTRATOR or if student is school-affiliated',
+    description: 'Required if role=ADMINISTRATOR. Auto-filled for ADMINISTRATOR-created users.',
   })
   @IsOptional()
   @IsUUID()
   schoolId?: string;
+
+  @ApiPropertyOptional({
+    example: 'uuid-of-section',
+    description: 'Required for TEACHER and STUDENT roles. Must be a valid section in the school.',
+  })
+  @IsOptional()
+  @IsUUID()
+  sectionId?: string;
+
+  @ApiPropertyOptional({
+    enum: Subject,
+    description: 'Required for TEACHER role. The subject this teacher teaches in the assigned section.',
+  })
+  @IsOptional()
+  @IsEnum(Subject)
+  subject?: Subject;
 }
 
 export class BulkCreateUsersDto {

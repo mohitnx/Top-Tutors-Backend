@@ -12,6 +12,7 @@ import { PrismaModule } from '../../prisma/prisma.module';
 import { AuthModule } from '../auth/auth.module';
 import { MessagesModule } from '../messages/messages.module';
 import { AiModule } from '../ai/ai.module';
+import { ProjectsModule } from '../projects/projects.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { AiModule } from '../ai/ai.module';
     PrismaModule,
     AuthModule,
     AiModule,
+    ProjectsModule,
     forwardRef(() => MessagesModule), // For tutor notification integration
     MulterModule.register({
       limits: {

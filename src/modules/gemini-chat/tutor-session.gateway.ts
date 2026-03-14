@@ -4,14 +4,16 @@ import {
   SubscribeMessage,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  OnGatewayInit,
   ConnectedSocket,
   MessageBody,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger, Inject, forwardRef } from '@nestjs/common';
+import { Logger, Inject, Optional, forwardRef } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
+import { WaitingQueueService } from '../messages/waiting-queue.service';
 import { v4 as uuidv4 } from 'uuid';
 
 // Forward reference to avoid circular dependency
@@ -32,7 +34,7 @@ interface ConnectedClient {
   },
   transports: ['websocket', 'polling'],
 })
-export class TutorSessionGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class TutorSessionGateway implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit {
   @WebSocketServer()
   server: Server;
 
@@ -46,7 +48,55 @@ export class TutorSessionGateway implements OnGatewayConnection, OnGatewayDiscon
     private readonly prisma: PrismaService,
     @Inject(forwardRef(() => GeminiChatGateway))
     private readonly geminiChatGateway: GeminiChatGateway,
+    @Optional() @Inject(forwardRef(() => WaitingQueueService))
+    private readonly waitingQueueService?: WaitingQueueService,
   ) {}
+
+  afterInit(server: Server) {
+    this.logger.log('TutorSessionGateway initialized');
+
+    // Register WaitingQueueService callbacks for WebSocket notifications
+    if (this.waitingQueueService) {
+      this.waitingQueueService.registerCallbacks({
+        onNotifyBusyTutors: (conversationId, tutors, waitingQueue) => {
+          for (const tutor of tutors) {
+            this.server.to(`user:${tutor.odID}`).emit('busyTutorNotification', {
+              conversationId,
+              subject: waitingQueue.subject,
+              topic: waitingQueue.topic,
+              studentName: waitingQueue.studentName,
+              waitingSince: waitingQueue.waitingSince,
+              message: 'A student is waiting for help. Please provide your estimated availability.',
+            });
+          }
+          this.logger.log(`Notified ${tutors.length} busy tutors for conversation ${conversationId}`);
+        },
+        onNotifyStudent: (studentUserId, shortestWait, tutorResponses) => {
+          this.server.to(`user:${studentUserId}`).emit('tutorETAUpdate', {
+            shortestWaitMinutes: shortestWait,
+            tutorResponses,
+            message: `A tutor will be available in ~${shortestWait} minute${shortestWait !== 1 ? 's' : ''}`,
+          });
+          this.logger.log(`Notified student ${studentUserId}: shortest wait ${shortestWait} minutes`);
+        },
+        onRemindTutor: (tutorUserId, conversationId, waitingQueueId) => {
+          this.server.to(`user:${tutorUserId}`).emit('tutorReminder', {
+            conversationId,
+            waitingQueueId,
+            message: 'A student is still waiting for help. Are you available now?',
+          });
+          this.logger.log(`Sent reminder to tutor ${tutorUserId} for conversation ${conversationId}`);
+        },
+        onSessionTaken: (tutorUserId, conversationId) => {
+          this.server.to(`user:${tutorUserId}`).emit('sessionTaken', {
+            conversationId,
+            message: 'This session has been taken by another tutor.',
+          });
+        },
+      });
+      this.logger.log('WaitingQueueService callbacks registered');
+    }
+  }
 
   // ============ Connection Handling ============
 
@@ -88,6 +138,52 @@ export class TutorSessionGateway implements OnGatewayConnection, OnGatewayDiscon
       if (role === 'tutor' && tutor) {
         client.join(`tutor:${tutor.id}`);
         client.join('tutors'); // Global tutor room for broadcasts
+
+        // Auto-join tutor to any active session they own
+        const activeTutorSessions = await this.prisma.tutor_sessions.findMany({
+          where: {
+            tutorId: tutor.id,
+            status: { in: ['ACCEPTED', 'ACTIVE'] },
+          },
+          select: { id: true },
+        });
+        for (const session of activeTutorSessions) {
+          const roomName = `session:${session.id}`;
+          client.join(roomName);
+          if (!this.sessionRooms.has(session.id)) {
+            this.sessionRooms.set(session.id, new Set());
+          }
+          this.sessionRooms.get(session.id)?.add(client.id);
+          this.connectedClients.get(client.id)!.sessionId = session.id;
+          this.logger.log(`Auto-joined tutor ${userId} to session ${session.id}`);
+        }
+      }
+
+      // If student, auto-join any active tutor session
+      if (role === 'student') {
+        const student = await this.prisma.students.findUnique({
+          where: { userId },
+          select: { id: true },
+        });
+        if (student) {
+          const activeStudentSessions = await this.prisma.tutor_sessions.findMany({
+            where: {
+              studentId: student.id,
+              status: { in: ['ACCEPTED', 'ACTIVE'] },
+            },
+            select: { id: true },
+          });
+          for (const session of activeStudentSessions) {
+            const roomName = `session:${session.id}`;
+            client.join(roomName);
+            if (!this.sessionRooms.has(session.id)) {
+              this.sessionRooms.set(session.id, new Set());
+            }
+            this.sessionRooms.get(session.id)?.add(client.id);
+            this.connectedClients.get(client.id)!.sessionId = session.id;
+            this.logger.log(`Auto-joined student ${userId} to session ${session.id}`);
+          }
+        }
       }
 
       // Join user-specific room for targeted messages

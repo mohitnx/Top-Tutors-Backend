@@ -12,6 +12,8 @@ import {
 } from '@nestjs/common';
 import { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { TutorSessionService } from './tutor-session.service';
 
@@ -26,6 +28,8 @@ export class TutorSessionController {
    * Request tutor help with full conversation analysis
    */
   @Post('request')
+  @UseGuards(RolesGuard)
+  @Roles('STUDENT')
   async requestTutor(
     @CurrentUser('id') userId: string,
     @Body() body: { aiSessionId: string; urgency?: string },
@@ -41,6 +45,8 @@ export class TutorSessionController {
    * Update live sharing consent
    */
   @Put('consent/:sessionId')
+  @UseGuards(RolesGuard)
+  @Roles('STUDENT')
   async updateConsent(
     @CurrentUser('id') userId: string,
     @Param('sessionId') sessionId: string,
@@ -68,6 +74,8 @@ export class TutorSessionController {
    * Get student room token for video call
    */
   @Get('student-room-token/:sessionId')
+  @UseGuards(RolesGuard)
+  @Roles('STUDENT')
   async getStudentRoomToken(
     @CurrentUser('id') userId: string,
     @Param('sessionId') sessionId: string,
@@ -108,6 +116,8 @@ export class TutorSessionController {
    * Get pending sessions available for tutor
    */
   @Get('pending')
+  @UseGuards(RolesGuard)
+  @Roles('TUTOR')
   async getPendingSessions(@CurrentUser('id') userId: string) {
     return this.tutorSessionService.getPendingSessions(userId);
   }
@@ -116,6 +126,8 @@ export class TutorSessionController {
    * Accept a session
    */
   @Post(':sessionId/accept')
+  @UseGuards(RolesGuard)
+  @Roles('TUTOR')
   async acceptSession(
     @CurrentUser('id') userId: string,
     @Param('sessionId') sessionId: string,
@@ -127,6 +139,8 @@ export class TutorSessionController {
    * Start the session
    */
   @Post(':sessionId/start')
+  @UseGuards(RolesGuard)
+  @Roles('TUTOR')
   async startSession(
     @CurrentUser('id') userId: string,
     @Param('sessionId') sessionId: string,
@@ -135,9 +149,11 @@ export class TutorSessionController {
   }
 
   /**
-   * End the session
+   * End the session (TUTOR only — students cannot end sessions)
    */
   @Post(':sessionId/end')
+  @UseGuards(RolesGuard)
+  @Roles('TUTOR')
   async endSession(
     @CurrentUser('id') userId: string,
     @Param('sessionId') sessionId: string,
@@ -149,6 +165,8 @@ export class TutorSessionController {
    * Get chat history for tutor (respects consent)
    */
   @Get(':sessionId/chat-history')
+  @UseGuards(RolesGuard)
+  @Roles('TUTOR')
   async getChatHistory(
     @CurrentUser('id') userId: string,
     @Param('sessionId') sessionId: string,
@@ -177,6 +195,8 @@ export class TutorSessionController {
    * Save whiteboard data
    */
   @Put(':sessionId/whiteboard')
+  @UseGuards(RolesGuard)
+  @Roles('TUTOR')
   async saveWhiteboard(
     @CurrentUser('id') userId: string,
     @Param('sessionId') sessionId: string,
@@ -195,6 +215,35 @@ export class TutorSessionController {
   @Post('fix-tutor-status')
   async fixTutorStatus() {
     return this.tutorSessionService.fixTutorStatusInconsistencies();
+  }
+
+  // ============ Multi-Tutor Collaboration ============
+
+  /**
+   * Invite another tutor to join the active session
+   */
+  @Post(':sessionId/invite-tutor')
+  @UseGuards(RolesGuard)
+  @Roles('TUTOR')
+  async inviteTutor(
+    @CurrentUser('id') userId: string,
+    @Param('sessionId') sessionId: string,
+    @Body() body: { tutorId: string },
+  ) {
+    return this.tutorSessionService.inviteTutorToSession(userId, sessionId, body.tutorId);
+  }
+
+  /**
+   * Get available tutors that can be invited to the session
+   */
+  @Get(':sessionId/available-tutors')
+  @UseGuards(RolesGuard)
+  @Roles('TUTOR')
+  async getAvailableTutors(
+    @CurrentUser('id') userId: string,
+    @Param('sessionId') sessionId: string,
+  ) {
+    return this.tutorSessionService.getAvailableTutorsForInvite(userId, sessionId);
   }
 
   // ============ Daily.co Meeting Data Endpoints ============

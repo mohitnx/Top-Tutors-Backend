@@ -6,12 +6,16 @@ import {
   ForbiddenException,
   Inject,
   Optional,
+  forwardRef,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { GeminiChatService } from './gemini-chat.service';
 import { TutorSessionGateway } from './tutor-session.gateway';
 import { PromptService } from '../prompts/prompt.service';
+import { LlmService } from '../llm/llm.service';
+import { TutorNotificationService } from '../messages/tutor-notification.service';
+import { WaitingQueueService } from '../messages/waiting-queue.service';
 import { v4 as uuidv4 } from 'uuid';
 
 export interface TutorSessionSummary {
@@ -50,7 +54,10 @@ export class TutorSessionService {
     private readonly prisma: PrismaService,
     private readonly geminiChatService: GeminiChatService,
     private readonly promptService: PromptService,
+    private readonly llm: LlmService,
     @Optional() @Inject(TutorSessionGateway) private readonly tutorSessionGateway?: TutorSessionGateway,
+    @Optional() @Inject(forwardRef(() => TutorNotificationService)) private readonly tutorNotificationService?: TutorNotificationService,
+    @Optional() @Inject(forwardRef(() => WaitingQueueService)) private readonly waitingQueueService?: WaitingQueueService,
   ) {
     this.dailyApiKey = this.configService.get<string>('DAILY_API_KEY');
     this.dailyDomain = this.configService.get<string>('DAILY_DOMAIN');
@@ -104,8 +111,14 @@ export class TutorSessionService {
       throw new BadRequestException('Student profile required');
     }
 
+    // Emit progress: analyzing conversation
+    this.emitProgressStatus(userId, 'ANALYZING', 'Analyzing your conversation...');
+
     // Generate comprehensive summary from all messages
     const analysis = await this.analyzeFullConversation(aiSession.ai_messages);
+
+    // Emit progress: analysis complete
+    this.emitProgressStatus(userId, 'ANALYZED', `We've identified your issue: ${analysis.topic}`);
 
     // Create message snapshot
     const messageSnapshot = aiSession.ai_messages.map((m: any) => ({
@@ -178,10 +191,14 @@ export class TutorSessionService {
       },
     });
 
+    // Emit progress: contacting tutors
+    this.emitProgressStatus(userId, 'CONTACTING', 'Contacting available tutors...');
+
     // Notify tutors about the new request
-    if (this.tutorSessionGateway) {
-      await this.notifyTutorsOfNewRequest(tutorSession.id, analysis, student);
-    }
+    await this.notifyTutorsOfNewRequest(tutorSession.id, analysis, student, conversation.id, userId);
+
+    // Emit progress: waiting for response
+    this.emitProgressStatus(userId, 'WAITING', 'Waiting for tutor response...');
 
     this.logger.log(`Tutor session created: ${tutorSession.id} for AI session: ${aiSessionId}`);
 
@@ -218,17 +235,12 @@ export class TutorSessionService {
       .join('\n\n');
 
     try {
-      const resolved = this.promptService.resolve('conversation-analysis', {
+      const result = await this.llm.generateFromPrompt('conversation-analysis', {
         conversationText: conversationText.slice(0, 10000),
       });
 
-      // Use the GeminiChatService's model detection
-      const model = await (this.geminiChatService as any).getWorkingModel();
-      const prompt = resolved.userPrompt!;
+      const responseText = result.text;
 
-      const result = await model.generateContent(prompt);
-      const responseText = result.response.text();
-      
       // Parse JSON response
       const cleanedResponse = responseText.replace(/```json\n?|\n?```/g, '').trim();
       const parsed = JSON.parse(cleanedResponse);
@@ -282,6 +294,13 @@ export class TutorSessionService {
       throw new NotFoundException('Tutor profile not found');
     }
 
+    // Check if tutor is already busy with another session
+    if (tutor.isBusy || tutor.currentConversationId) {
+      throw new BadRequestException(
+        'You are currently in another session. Please complete it before accepting a new one.',
+      );
+    }
+
     // Get tutor session
     const session = await this.prisma.tutor_sessions.findUnique({
       where: { id: tutorSessionId },
@@ -312,9 +331,9 @@ export class TutorSessionService {
     const dailyRoom = await this.createDailyRoom(tutorSessionId);
     this.logger.log(`Daily.co room created: ${!!dailyRoom}, URL: ${dailyRoom?.url}`);
 
-    // Update session with tutor info
-    await this.prisma.tutor_sessions.update({
-      where: { id: tutorSessionId },
+    // Atomic update with status check to prevent race condition (two tutors accepting simultaneously)
+    const updateResult = await this.prisma.tutor_sessions.updateMany({
+      where: { id: tutorSessionId, status: 'PENDING' },
       data: {
         tutorId: tutor.id,
         status: 'ACCEPTED',
@@ -322,9 +341,13 @@ export class TutorSessionService {
         dailyRoomName: dailyRoom?.name,
         dailyRoomUrl: dailyRoom?.url,
         dailyRoomToken: dailyRoom?.token,
-        whiteboardRoomId: uuidv4(), // Generate whiteboard room ID
+        whiteboardRoomId: uuidv4(),
       },
     });
+
+    if (updateResult.count === 0) {
+      throw new BadRequestException('Session was already accepted by another tutor');
+    }
 
     // Update AI session status
     await this.prisma.ai_chat_sessions.update({
@@ -334,12 +357,23 @@ export class TutorSessionService {
       },
     });
 
+    // Clear waiting queue and pending notifications
+    const linkedConversationId = session.ai_chat_sessions.linkedConversationId;
+    if (linkedConversationId) {
+      if (this.waitingQueueService) {
+        await this.waitingQueueService.markConversationTaken(linkedConversationId, tutor.id);
+      }
+      if (this.tutorNotificationService) {
+        await this.tutorNotificationService.handleTutorAccept(linkedConversationId, tutor.id);
+      }
+    }
+
     // Mark tutor as busy
     await this.prisma.tutors.update({
       where: { id: tutor.id },
       data: {
         isBusy: true,
-        currentConversationId: session.ai_chat_sessions.linkedConversationId,
+        currentConversationId: linkedConversationId,
       },
     });
 
@@ -961,59 +995,265 @@ export class TutorSessionService {
 
   /**
    * Notify available tutors about the new tutor session request
+   * Uses wave-based notification system via TutorNotificationService
    */
   private async notifyTutorsOfNewRequest(
     tutorSessionId: string,
     analysis: { topic: string; subject: string; summary: string },
     student: any,
+    conversationId: string,
+    studentUserId: string,
   ) {
     try {
-      // Get available tutors for this subject
-      const availableTutors = await this.prisma.tutors.findMany({
-        where: {
-          isAvailable: true,
-          isVerified: true,
-          isBusy: false,
-          subjects: {
-            has: analysis.subject as any,
-          },
-        },
-        select: {
-          id: true,
-          userId: true,
-        },
-      });
-
-      if (availableTutors.length === 0) {
-        this.logger.warn(`No available tutors found for subject: ${analysis.subject}`);
-        return;
-      }
-
-      const tutorIds = availableTutors.map((t: any) => t.userId);
-
-      // Get student name
       const studentUser = await this.prisma.user.findUnique({
         where: { id: student.userId },
         select: { name: true },
       });
-
       const studentName = studentUser?.name || 'Student';
 
-      // Notify tutors via WebSocket
-      if (this.tutorSessionGateway) {
-        await this.tutorSessionGateway.notifyTutorsOfNewRequest(tutorIds, {
-          tutorSessionId,
-          topic: analysis.topic,
-          subject: analysis.subject as any,
-          summary: analysis.summary,
-          studentName,
+      // Use wave-based notification system if available
+      if (this.tutorNotificationService) {
+        await this.tutorNotificationService.notifyTutorsForConversation(
+          {
+            conversationId,
+            subject: analysis.subject,
+            topic: analysis.topic,
+            urgency: 'NORMAL',
+            studentName,
+            studentId: student.id,
+          },
+          // onNotify: emit WebSocket to each tutor in the wave
+          (tutors, wave) => {
+            if (this.tutorSessionGateway) {
+              const tutorUserIds = tutors.map(t => t.odID);
+              this.tutorSessionGateway.notifyTutorsOfNewRequest(tutorUserIds, {
+                tutorSessionId,
+                topic: analysis.topic,
+                subject: analysis.subject,
+                summary: analysis.summary,
+                studentName,
+              });
+              this.logger.log(`Wave ${wave}: Notified ${tutorUserIds.length} tutors for session ${tutorSessionId}`);
+            }
+          },
+          // onAllBusy: notify student that all tutors are busy
+          (busyInfo) => {
+            if (this.tutorSessionGateway) {
+              this.tutorSessionGateway.server
+                .to(`user:${studentUserId}`)
+                .emit('tutorWaitStatus', {
+                  tutorSessionId,
+                  status: 'ALL_BUSY',
+                  busyTutors: busyInfo,
+                  message: 'All tutors are currently busy. Getting availability estimates...',
+                });
+            }
+          },
+          // onNoTutors: no tutors available for this subject
+          () => {
+            if (this.tutorSessionGateway) {
+              this.tutorSessionGateway.server
+                .to(`user:${studentUserId}`)
+                .emit('tutorWaitStatus', {
+                  tutorSessionId,
+                  status: 'NO_TUTORS',
+                  message: 'No tutors available for this subject right now. Please try again later.',
+                });
+            }
+          },
+        );
+      } else {
+        // Fallback: one-shot notification to all available tutors
+        const availableTutors = await this.prisma.tutors.findMany({
+          where: {
+            isAvailable: true,
+            isVerified: true,
+            isBusy: false,
+            subjects: { has: analysis.subject as any },
+          },
+          select: { id: true, userId: true },
         });
+
+        if (availableTutors.length > 0 && this.tutorSessionGateway) {
+          const tutorIds = availableTutors.map((t: any) => t.userId);
+          await this.tutorSessionGateway.notifyTutorsOfNewRequest(tutorIds, {
+            tutorSessionId,
+            topic: analysis.topic,
+            subject: analysis.subject as any,
+            summary: analysis.summary,
+            studentName,
+          });
+        }
       }
 
-      this.logger.log(`Notified ${tutorIds.length} tutors about session ${tutorSessionId}`);
+      // Add to waiting queue for timeout tracking
+      if (this.waitingQueueService) {
+        await this.waitingQueueService.addToWaitingQueue(
+          conversationId,
+          student.id,
+          analysis.subject,
+        );
+      }
+
+      this.logger.log(`Tutor notification started for session ${tutorSessionId}`);
     } catch (error: any) {
       this.logger.error(`Failed to notify tutors: ${error.message}`);
     }
+  }
+
+  // ============ Multi-Tutor Collaboration ============
+
+  /**
+   * Invite another tutor to join an active session
+   */
+  async inviteTutorToSession(
+    invitingTutorUserId: string,
+    tutorSessionId: string,
+    invitedTutorId: string,
+  ): Promise<{ success: boolean; dailyToken?: string }> {
+    const invitingTutor = await this.prisma.tutors.findUnique({
+      where: { userId: invitingTutorUserId },
+    });
+    if (!invitingTutor) {
+      throw new NotFoundException('Tutor not found');
+    }
+
+    const session = await this.prisma.tutor_sessions.findFirst({
+      where: {
+        id: tutorSessionId,
+        tutorId: invitingTutor.id,
+        status: { in: ['ACCEPTED', 'ACTIVE'] },
+      },
+    });
+    if (!session) {
+      throw new NotFoundException('Active session not found or you are not the session owner');
+    }
+
+    const invitedTutor = await this.prisma.tutors.findUnique({
+      where: { id: invitedTutorId },
+      include: { users: { select: { id: true, name: true, avatar: true } } },
+    });
+    if (!invitedTutor) {
+      throw new NotFoundException('Invited tutor not found');
+    }
+    if (invitedTutor.isBusy) {
+      throw new BadRequestException('Invited tutor is currently busy with another session');
+    }
+
+    // Generate Daily.co token for invited tutor
+    let dailyToken: string | undefined;
+    if (session.dailyRoomName && this.dailyApiKey) {
+      try {
+        const tokenResponse = await fetch('https://api.daily.co/v1/meeting-tokens', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.dailyApiKey}`,
+          },
+          body: JSON.stringify({
+            properties: {
+              room_name: session.dailyRoomName,
+              is_owner: false,
+              enable_screenshare: true,
+            },
+          }),
+        });
+        if (tokenResponse.ok) {
+          const data = await tokenResponse.json();
+          dailyToken = data.token;
+        }
+      } catch (error: any) {
+        this.logger.error(`Failed to generate Daily.co token for invited tutor: ${error.message}`);
+      }
+    }
+
+    // Create participant record
+    await this.prisma.tutor_session_participants.create({
+      data: {
+        id: uuidv4(),
+        sessionId: tutorSessionId,
+        tutorId: invitedTutorId,
+        invitedBy: invitingTutor.id,
+        status: 'INVITED',
+        dailyRoomToken: dailyToken,
+      },
+    });
+
+    // Notify invited tutor via WebSocket
+    if (this.tutorSessionGateway) {
+      const invitingUser = await this.prisma.user.findUnique({
+        where: { id: invitingTutorUserId },
+        select: { name: true },
+      });
+
+      this.tutorSessionGateway.server.to(`user:${invitedTutor.users.id}`).emit('sessionInvite', {
+        tutorSessionId,
+        invitedBy: {
+          id: invitingTutor.id,
+          name: invitingUser?.name || 'Tutor',
+        },
+        dailyRoomUrl: session.dailyRoomUrl,
+        dailyToken,
+        topic: session.detectedTopic,
+        subject: session.detectedSubject,
+      });
+    }
+
+    this.logger.log(`Tutor ${invitedTutorId} invited to session ${tutorSessionId} by ${invitingTutor.id}`);
+
+    return { success: true, dailyToken };
+  }
+
+  /**
+   * Get available tutors that can be invited to a session
+   */
+  async getAvailableTutorsForInvite(
+    tutorUserId: string,
+    tutorSessionId: string,
+  ): Promise<any[]> {
+    const tutor = await this.prisma.tutors.findUnique({
+      where: { userId: tutorUserId },
+    });
+    if (!tutor) {
+      throw new NotFoundException('Tutor not found');
+    }
+
+    const session = await this.prisma.tutor_sessions.findFirst({
+      where: {
+        id: tutorSessionId,
+        tutorId: tutor.id,
+        status: { in: ['ACCEPTED', 'ACTIVE'] },
+      },
+      include: { participants: { select: { tutorId: true } } },
+    });
+    if (!session) {
+      throw new NotFoundException('Active session not found');
+    }
+
+    // Get already-invited tutor IDs
+    const excludeIds = [tutor.id, ...session.participants.map((p: any) => p.tutorId)];
+
+    const availableTutors = await this.prisma.tutors.findMany({
+      where: {
+        id: { notIn: excludeIds },
+        isVerified: true,
+        isAvailable: true,
+        isBusy: false,
+      },
+      include: {
+        users: { select: { name: true, avatar: true } },
+      },
+      orderBy: [{ rating: 'desc' }, { experience: 'desc' }],
+    });
+
+    return availableTutors.map((t: any) => ({
+      id: t.id,
+      name: t.users?.name || 'Tutor',
+      avatar: t.users?.avatar,
+      subjects: t.subjects,
+      rating: t.rating,
+      experience: t.experience,
+    }));
   }
 
   // ============ Admin/Debug Methods ============
@@ -1162,6 +1402,21 @@ export class TutorSessionService {
       duration: session.callDuration || undefined,
       roomUrl: session.dailyRoomUrl || undefined,
     };
+  }
+
+  // ============ Progress Status ============
+
+  /**
+   * Emit progressive status updates to student during tutor request flow
+   */
+  private emitProgressStatus(userId: string, status: string, message: string) {
+    if (this.tutorSessionGateway) {
+      this.tutorSessionGateway.server.to(`user:${userId}`).emit('tutorRequestProgress', {
+        status,
+        message,
+        timestamp: Date.now(),
+      });
+    }
   }
 
   // ============ Helper Methods ============

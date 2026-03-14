@@ -129,8 +129,24 @@ export class ProjectsGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   // ============ Server-side emission methods ============
 
-  emitStreamChunk(userId: string, chunk: ProjectStreamChunk) {
+  emitStreamChunk(userId: string, sessionId: string, chunk: ProjectStreamChunk) {
     this.server.to(`user:${userId}`).emit('streamChunk', chunk);
+    this.server.to(`project-session:${sessionId}`).emit('streamChunk', chunk);
+  }
+
+  emitCouncilStatus(userId: string, sessionId: string, data: any) {
+    this.server.to(`user:${userId}`).emit('councilStatus', data);
+    this.server.to(`project-session:${sessionId}`).emit('councilStatus', data);
+  }
+
+  emitCouncilMemberComplete(userId: string, sessionId: string, data: any) {
+    this.server.to(`user:${userId}`).emit('councilMemberComplete', data);
+    this.server.to(`project-session:${sessionId}`).emit('councilMemberComplete', data);
+  }
+
+  emitCouncilSynthesisStart(userId: string, sessionId: string, data: any) {
+    this.server.to(`user:${userId}`).emit('councilSynthesisStart', data);
+    this.server.to(`project-session:${sessionId}`).emit('councilSynthesisStart', data);
   }
 
   emitResourceAdded(userId: string, projectId: string, resource: any) {

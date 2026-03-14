@@ -36,21 +36,41 @@ export class AnthropicProvider implements ILlmProvider {
 
     const { system, anthropicMessages } = this.toAnthropicFormat(messages, options);
 
+    const tools: any[] = [];
+    if (options.webSearch) {
+      tools.push({
+        type: 'web_search_20250305',
+        name: 'web_search',
+        max_uses: options.maxWebSearches || 3,
+      });
+    }
+
+    // Anthropic requires max_tokens > thinking.budget_tokens, capped at 64000
+    const MAX_ANTHROPIC_TOKENS = 64000;
+    const baseMaxTokens = options.generationConfig?.maxOutputTokens || 4096;
+    const thinkingEnabled = options.thinkingBudget && options.thinkingBudget > 0;
+    const maxTokens = thinkingEnabled
+      ? Math.min(baseMaxTokens + options.thinkingBudget!, MAX_ANTHROPIC_TOKENS)
+      : baseMaxTokens;
+
     const response = await this.client.messages.create({
       model: options.model,
-      max_tokens: options.generationConfig?.maxOutputTokens || 4096,
+      max_tokens: maxTokens,
       ...(system && { system }),
-      ...(options.generationConfig?.temperature !== undefined && {
+      ...(options.generationConfig?.temperature !== undefined && !thinkingEnabled && {
         temperature: options.generationConfig.temperature,
       }),
       ...(options.generationConfig?.topP !== undefined && {
         top_p: options.generationConfig.topP,
       }),
-      ...(options.webSearch && {
-        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 } as any],
+      ...(tools.length > 0 && { tools }),
+      // Extended thinking: real chain-of-thought with thinking budget
+      ...(thinkingEnabled && {
+        thinking: { type: 'enabled', budget_tokens: options.thinkingBudget },
+        temperature: 1,
       }),
       messages: anthropicMessages,
-    });
+    } as any);
 
     const text = response.content
       .filter((b): b is Anthropic.TextBlock => b.type === 'text')
@@ -71,21 +91,41 @@ export class AnthropicProvider implements ILlmProvider {
 
     const { system, anthropicMessages } = this.toAnthropicFormat(messages, options);
 
+    const streamTools: any[] = [];
+    if (options.webSearch) {
+      streamTools.push({
+        type: 'web_search_20250305',
+        name: 'web_search',
+        max_uses: options.maxWebSearches || 3,
+      });
+    }
+
+    // Anthropic requires max_tokens > thinking.budget_tokens, capped at 64000
+    const MAX_STREAM_TOKENS = 64000;
+    const streamBaseMaxTokens = options.generationConfig?.maxOutputTokens || 4096;
+    const streamThinkingEnabled = options.thinkingBudget && options.thinkingBudget > 0;
+    const streamMaxTokens = streamThinkingEnabled
+      ? Math.min(streamBaseMaxTokens + options.thinkingBudget!, MAX_STREAM_TOKENS)
+      : streamBaseMaxTokens;
+
     const streamResponse = this.client.messages.stream({
       model: options.model,
-      max_tokens: options.generationConfig?.maxOutputTokens || 4096,
+      max_tokens: streamMaxTokens,
       ...(system && { system }),
-      ...(options.generationConfig?.temperature !== undefined && {
+      ...(options.generationConfig?.temperature !== undefined && !streamThinkingEnabled && {
         temperature: options.generationConfig.temperature,
       }),
       ...(options.generationConfig?.topP !== undefined && {
         top_p: options.generationConfig.topP,
       }),
-      ...(options.webSearch && {
-        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 } as any],
+      ...(streamTools.length > 0 && { tools: streamTools }),
+      // Extended thinking: real chain-of-thought with thinking budget
+      ...(streamThinkingEnabled && {
+        thinking: { type: 'enabled', budget_tokens: options.thinkingBudget },
+        temperature: 1,
       }),
       messages: anthropicMessages,
-    });
+    } as any);
 
     let fullText = '';
 
@@ -207,6 +247,11 @@ export class AnthropicProvider implements ILlmProvider {
       }
 
       const content = this.toAnthropicContent(msg.parts);
+      // Skip messages that resolved to only empty text blocks
+      const hasReal = content.some(
+        (b) => b.type !== 'text' || ('text' in b && b.text && b.text !== '(empty)'),
+      );
+      if (!hasReal) continue;
       anthropicMessages.push({
         role: msg.role === 'user' ? 'user' : 'assistant',
         content,
@@ -262,6 +307,6 @@ export class AnthropicProvider implements ILlmProvider {
       }
     }
 
-    return blocks.length > 0 ? blocks : [{ type: 'text', text: '' }];
+    return blocks.length > 0 ? blocks : [{ type: 'text', text: '(empty)' }];
   }
 }

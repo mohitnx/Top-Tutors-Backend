@@ -42,6 +42,8 @@ import {
   RequestTutorDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 
 @ApiTags('gemini-chat')
@@ -175,8 +177,9 @@ export class GeminiChatController {
     res.write(`data: ${JSON.stringify({ type: 'init', messageId: result.messageId, sessionId: result.sessionId })}\n\n`);
 
     result.emitter.on('chunk', (chunk) => {
+      if (dto.readAloud) chunk.readAloud = true;
       res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-      
+
       if (chunk.type === 'end' || chunk.type === 'error') {
         res.end();
       }
@@ -196,16 +199,19 @@ export class GeminiChatController {
       const allowedMimes = [
         'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
         'application/pdf',
+        'text/plain',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       ];
       if (allowedMimes.includes(file.mimetype)) {
         cb(null, true);
       } else {
-        cb(new BadRequestException('Only images and PDFs are allowed'), false);
+        cb(new BadRequestException('Only images, PDFs, text files, and Word documents are allowed'), false);
       }
     },
   }))
   @ApiConsumes('multipart/form-data')
-  @ApiOperation({ summary: 'Send a message with attachments (images/PDFs)' })
+  @ApiOperation({ summary: 'Send a message with attachments (images/PDFs/text/Word)' })
   @ApiBody({
     schema: {
       type: 'object',
@@ -243,9 +249,10 @@ export class GeminiChatController {
     }
 
     const result = await this.geminiChatService.sendMessageStreaming(user.id, dto, files);
-    
+
     // Set up event forwarding to WebSocket
     result.emitter.on('chunk', (chunk) => {
+      if (dto.readAloud) chunk.readAloud = true;
       this.geminiChatGateway.emitStreamChunk(user.id, chunk);
     });
 
@@ -292,16 +299,20 @@ export class GeminiChatController {
       throw new BadRequestException('No audio file provided');
     }
 
-    const result = await this.geminiChatService.sendAudioMessage(user.id, file, dto.sessionId);
-    
+    const result = await this.geminiChatService.sendAudioMessage(user.id, file, dto.sessionId, dto.readAloud);
+
     // Set up event forwarding to WebSocket
     result.emitter.on('chunk', (chunk) => {
+      // Propagate readAloud flag to all stream chunks
+      if (dto.readAloud) chunk.readAloud = true;
       this.geminiChatGateway.emitStreamChunk(user.id, chunk);
     });
 
     return {
       messageId: result.messageId,
       sessionId: result.sessionId,
+      audioUrl: result.audioUrl,
+      transcription: result.transcription,
       streaming: true,
     };
   }
@@ -356,10 +367,57 @@ export class GeminiChatController {
     return { found: true, ...state };
   }
 
+  @Get('messages/:messageId/stream-state')
+  @ApiOperation({ summary: 'Get stream state by messageId (for reconnection after reload)' })
+  @ApiParam({ name: 'messageId', description: 'AI message ID' })
+  @ApiResponse({ status: 200, description: 'Stream state with content, trace, mode' })
+  async getStreamStateByMessageId(
+    @CurrentUser() user: any,
+    @Param('messageId') messageId: string,
+  ) {
+    const state = await this.geminiChatService.getStreamStateByMessageId(messageId, user.id);
+    if (!state) {
+      return { found: false };
+    }
+    return { found: true, ...state };
+  }
+
+  @Get('sessions/:sessionId/latest-stream')
+  @ApiOperation({ summary: 'Get the most recent AI stream for a session (reconnect after page reload)' })
+  @ApiParam({ name: 'sessionId', description: 'Chat session ID' })
+  @ApiResponse({ status: 200, description: 'Latest AI message state' })
+  async getLatestStream(
+    @CurrentUser() user: any,
+    @Param('sessionId') sessionId: string,
+  ) {
+    const state = await this.geminiChatService.getMostRecentAIMessage(sessionId, user.id);
+    if (!state) {
+      return { found: false };
+    }
+    return { found: true, ...state };
+  }
+
+  // ============ Attachment Preview ============
+
+  @Get('messages/:messageId/attachments/:index/preview')
+  @ApiOperation({ summary: 'Get a temporary preview URL for a message attachment' })
+  @ApiParam({ name: 'messageId' })
+  @ApiParam({ name: 'index', description: 'Attachment index (0-based)' })
+  @ApiResponse({ status: 200, description: 'Signed preview URL (valid for 1 hour)' })
+  async getAttachmentPreview(
+    @CurrentUser() user: any,
+    @Param('messageId') messageId: string,
+    @Param('index') index: string,
+  ) {
+    return this.geminiChatService.getAttachmentPreviewUrl(messageId, parseInt(index, 10), user.id);
+  }
+
   // ============ Tutor Request Endpoints ============
 
   @Post('tutor/request')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(RolesGuard)
+  @Roles('STUDENT')
   @ApiOperation({ summary: 'Request a real tutor for help with current session' })
   @ApiBody({ type: RequestTutorDto })
   @ApiResponse({ status: 200, description: 'Tutor request initiated' })
@@ -387,6 +445,8 @@ export class GeminiChatController {
 
   @Delete('tutor/request/:sessionId')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(RolesGuard)
+  @Roles('STUDENT')
   @ApiOperation({ summary: 'Cancel tutor request' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
   @ApiResponse({ status: 200, description: 'Tutor request cancelled' })
@@ -405,6 +465,8 @@ export class GeminiChatController {
   }
 
   @Get('tutor/status/:sessionId')
+  @UseGuards(RolesGuard)
+  @Roles('STUDENT')
   @ApiOperation({ summary: 'Get tutor request status for a session' })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
   @ApiResponse({ status: 200, description: 'Tutor request status' })

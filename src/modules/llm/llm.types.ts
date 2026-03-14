@@ -28,6 +28,10 @@ export interface LlmCallOptions {
   generationConfig?: GenerationConfig;
   /** Enable web search grounding — LLM can fetch real-time info from the internet */
   webSearch?: boolean;
+  /** Max web search tool calls (Anthropic only, default 3) */
+  maxWebSearches?: number;
+  /** Enable extended thinking / thinking budget (tokens allocated for chain-of-thought) */
+  thinkingBudget?: number;
 }
 
 /**

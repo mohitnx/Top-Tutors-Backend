@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ForbiddenException, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { OcrService } from './ocr.service';
@@ -8,7 +8,7 @@ import { TtsService } from './tts.service';
 import { Subject, UploadStatus } from '@prisma/client';
 
 @Injectable()
-export class DailyPackageService {
+export class DailyPackageService implements OnModuleInit {
   private readonly logger = new Logger(DailyPackageService.name);
 
   constructor(
@@ -19,6 +19,75 @@ export class DailyPackageService {
     private readonly pdfGen: PdfGenerationService,
     private readonly tts: TtsService,
   ) {}
+
+  /**
+   * On server start, mark any stuck PENDING/PROCESSING uploads as FAILED
+   * so teachers know to retry them.
+   */
+  async onModuleInit() {
+    const stuck = await this.prisma.daily_uploads.updateMany({
+      where: { status: { in: [UploadStatus.PENDING, UploadStatus.PROCESSING] } },
+      data: { status: UploadStatus.FAILED, errorMsg: 'Server restarted during processing — please retry' },
+    });
+    if (stuck.count > 0) {
+      this.logger.warn(`Marked ${stuck.count} stuck upload(s) as FAILED after server restart`);
+    }
+  }
+
+  /**
+   * Retry a failed upload by re-downloading images from storage and reprocessing.
+   */
+  async retryUpload(uploadId: string, userId: string, userRole: string, administeredSchoolId: string | null) {
+    const upload = await this.prisma.daily_uploads.findUnique({
+      where: { id: uploadId },
+      include: {
+        upload_images: { orderBy: { order: 'asc' } },
+        class_sections: true,
+      },
+    });
+
+    if (!upload) throw new NotFoundException('Upload not found');
+    if (upload.status !== UploadStatus.FAILED) {
+      throw new ForbiddenException('Only failed uploads can be retried');
+    }
+
+    // Verify access
+    if (userRole === 'ADMINISTRATOR') {
+      if (upload.class_sections.schoolId !== administeredSchoolId) {
+        throw new ForbiddenException('Access denied');
+      }
+    } else {
+      const teacher = await this.prisma.teachers.findUnique({ where: { userId } });
+      if (!teacher || upload.teacherId !== teacher.id) {
+        throw new ForbiddenException('Access denied');
+      }
+    }
+
+    // Download images back from storage
+    const imageBuffers = await Promise.all(
+      upload.upload_images.map(async (img) => {
+        const signedUrl = await this.storage.getSignedUrl(img.imageUrl);
+        const response = await fetch(signedUrl);
+        return Buffer.from(await response.arrayBuffer());
+      }),
+    );
+
+    // Clean up old extracted questions and package if any
+    await this.prisma.extracted_questions.deleteMany({ where: { uploadId } });
+    await this.prisma.daily_packages.deleteMany({ where: { uploadId } });
+
+    // Reset status and reprocess
+    await this.prisma.daily_uploads.update({
+      where: { id: uploadId },
+      data: { status: UploadStatus.PENDING, errorMsg: null },
+    });
+
+    this.processUpload(uploadId, imageBuffers, upload.subject).catch((err) => {
+      this.logger.error(`Retry processUpload failed for ${uploadId}: ${err.message}`);
+    });
+
+    return { uploadId, status: 'PENDING', message: 'Retry started' };
+  }
 
   async createUpload(
     userId: string,
@@ -92,23 +161,51 @@ export class DailyPackageService {
     return { uploadId: upload.id, status: 'PENDING' };
   }
 
+  private withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
+      promise.then(
+        (val) => { clearTimeout(timer); resolve(val); },
+        (err) => { clearTimeout(timer); reject(err); },
+      );
+    });
+  }
+
   async processUpload(uploadId: string, imageBuffers: Buffer[], subject: Subject): Promise<void> {
+    const t0 = Date.now();
+    const cp = (step: string) => {
+      const s = ((Date.now() - t0) / 1000).toFixed(1);
+      this.logger.log(`[UPLOAD ${uploadId}] [${s}s] ${step}`);
+    };
+
     try {
+      cp('Step 1/8: Setting status to PROCESSING');
       await this.prisma.daily_uploads.update({
         where: { id: uploadId },
         data: { status: UploadStatus.PROCESSING },
       });
 
-      // 1. OCR (Gemini Flash — extracts text from handwritten images)
-      const rawQuestions = await this.ocr.extractQuestions(imageBuffers);
-      this.logger.log(`OCR extracted ${rawQuestions.length} raw questions for upload ${uploadId}`);
+      cp(`Step 2/8: Starting OCR on ${imageBuffers.length} image(s)`);
+      const rawQuestions = await this.withTimeout(
+        this.ocr.extractQuestions(imageBuffers),
+        240_000,
+        'OCR extraction',
+      );
+      cp(`Step 2/8: OCR complete — ${rawQuestions.length} raw question(s)`);
 
-      // 2. Rank + Answer in single SOTA call (Gemini 2.5 Flash)
-      //    Groups similar questions semantically, ranks Most Asked / Best Asked,
-      //    and generates structured answers — all in one LLM call.
-      const answeredQuestions = await this.answerGen.rankAndAnswer(rawQuestions, subject);
+      if (rawQuestions.length === 0) {
+        throw new Error('OCR extracted 0 questions — ensure images contain readable text');
+      }
 
-      // 3. Persist questions to DB
+      cp(`Step 3/8: Starting ranking & answer generation for ${rawQuestions.length} question(s)`);
+      const answeredQuestions = await this.withTimeout(
+        this.answerGen.rankAndAnswer(rawQuestions, subject),
+        360_000,
+        'Rank & Answer generation',
+      );
+      cp(`Step 3/8: Ranking complete — ${answeredQuestions.length} answered question(s)`);
+
+      cp('Step 4/8: Saving questions to database');
       await this.prisma.extracted_questions.createMany({
         data: answeredQuestions.map((q) => ({
           uploadId,
@@ -121,31 +218,54 @@ export class DailyPackageService {
           realLifeExample: q.realLifeExample,
         })),
       });
+      cp('Step 4/8: Questions saved');
 
       const upload = await this.prisma.daily_uploads.findUnique({ where: { id: uploadId } });
       const now = new Date();
 
-      // 5. Generate PDF
-      const pdfBuffer = await this.pdfGen.generateDailyPdf(answeredQuestions, subject, now);
-      const pdfKey = `packages/${uploadId}/daily.pdf`;
-      const pdfUrl = await this.storage.uploadBuffer(pdfKey, pdfBuffer, 'application/pdf');
+      cp('Step 5/8: Generating PDF');
+      const pdfBuffer = await this.withTimeout(
+        this.pdfGen.generateDailyPdf(answeredQuestions, subject, now),
+        60_000,
+        'PDF generation',
+      );
+      cp(`Step 5/8: PDF generated (${(pdfBuffer.length / 1024).toFixed(1)} KB)`);
 
-      // 6. Generate audio (optional)
-      const audioBuffer = await this.tts.generateAudio(answeredQuestions, subject, now);
+      cp('Step 6/8: Uploading PDF to storage');
+      const pdfKey = `packages/${uploadId}/daily.pdf`;
+      const pdfUrl = await this.withTimeout(
+        this.storage.uploadBuffer(pdfKey, pdfBuffer, 'application/pdf'),
+        60_000,
+        'PDF upload',
+      );
+      cp('Step 6/8: PDF uploaded');
+
+      cp('Step 7/8: Generating audio (TTS)');
       let audioUrl: string | undefined;
-      if (audioBuffer) {
-        const audioKey = `packages/${uploadId}/daily.mp3`;
-        audioUrl = await this.storage.uploadBuffer(audioKey, audioBuffer, 'audio/mpeg');
+      try {
+        const audioBuffer = await this.withTimeout(
+          this.tts.generateAudio(answeredQuestions, subject, now),
+          120_000,
+          'TTS audio generation',
+        );
+        if (audioBuffer) {
+          const audioKey = `packages/${uploadId}/daily.mp3`;
+          audioUrl = await this.storage.uploadBuffer(audioKey, audioBuffer, 'audio/mpeg');
+          cp(`Step 7/8: Audio generated (${(audioBuffer.length / 1024).toFixed(1)} KB)`);
+        } else {
+          cp('Step 7/8: TTS not configured — skipped');
+        }
+      } catch (ttsErr) {
+        cp(`Step 7/8: TTS failed (non-fatal): ${ttsErr.message}`);
       }
 
-      // 7. Build quiz JSON
       const quizJson = answeredQuestions.map((q, i) => ({
         id: i + 1,
         question: q.text,
         answer: q.shortAnswer,
       }));
 
-      // 8. Create daily_packages record
+      cp('Step 8/8: Creating daily package record');
       await this.prisma.daily_packages.create({
         data: {
           uploadId,
@@ -164,9 +284,11 @@ export class DailyPackageService {
         data: { status: UploadStatus.COMPLETE },
       });
 
-      this.logger.log(`Daily package processing complete for upload ${uploadId}`);
+      cp('COMPLETE — all steps finished');
     } catch (err) {
-      this.logger.error(`Processing failed for upload ${uploadId}: ${err.message}`);
+      const s = ((Date.now() - t0) / 1000).toFixed(1);
+      this.logger.error(`[UPLOAD ${uploadId}] [${s}s] FAILED: ${err.message}`);
+      this.logger.error(`[UPLOAD ${uploadId}] Stack: ${err.stack}`);
       await this.prisma.daily_uploads.update({
         where: { id: uploadId },
         data: { status: UploadStatus.FAILED, errorMsg: err.message },

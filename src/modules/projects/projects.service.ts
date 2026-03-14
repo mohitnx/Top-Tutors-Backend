@@ -2,7 +2,6 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-  ForbiddenException,
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -30,9 +29,6 @@ export class ProjectsService {
   // ============ Project CRUD ============
 
   async createProject(userId: string, dto: CreateProjectDto): Promise<ProjectResponse> {
-    // Verify user is a school-affiliated student
-    await this.verifySchoolStudent(userId);
-
     const project = await this.prisma.projects.create({
       data: {
         userId,
@@ -186,6 +182,7 @@ export class ProjectsService {
     userId: string,
     title: string,
     file: Express.Multer.File,
+    sessionId?: string,
   ): Promise<ProjectResourceResponse> {
     const project = await this.prisma.projects.findFirst({
       where: { id: projectId, userId },
@@ -195,35 +192,65 @@ export class ProjectsService {
       throw new NotFoundException('Project not found');
     }
 
-    // Check resource limit (max 20 per project)
-    const resourceCount = await this.prisma.project_resources.count({
+    // Verify session ownership if sessionId provided
+    if (sessionId) {
+      const session = await this.prisma.project_chat_sessions.findFirst({
+        where: { id: sessionId, projectId, userId },
+      });
+      if (!session) throw new NotFoundException('Chat session not found');
+    }
+
+    // Check resource limit (max 20 per project + max 10 per session)
+    if (sessionId) {
+      const sessionResourceCount = await this.prisma.project_resources.count({
+        where: { projectId, sessionId },
+      });
+      if (sessionResourceCount >= 10) {
+        throw new BadRequestException('Maximum 10 resources per session');
+      }
+    }
+    const totalResourceCount = await this.prisma.project_resources.count({
       where: { projectId },
     });
-    if (resourceCount >= 20) {
-      throw new BadRequestException('Maximum 20 resources per project');
+    if (totalResourceCount >= 50) {
+      throw new BadRequestException('Maximum 50 resources per project (including session resources)');
     }
 
     const isImage = file.mimetype.startsWith('image/');
     const isPdf = file.mimetype === 'application/pdf';
-    const type = isImage ? 'IMAGE' : 'PDF';
+    const isTextFile = file.mimetype === 'text/plain';
+    const isWordDoc = file.mimetype === 'application/msword' ||
+      file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    const type = isImage ? 'IMAGE' : (isPdf ? 'PDF' : 'DOCUMENT');
 
-    // Upload to S3
+    // Upload to GCS
     const ext = file.originalname?.split('.').pop() || 'bin';
     const key = `projects/${projectId}/${uuidv4()}.${ext}`;
-    const url = await this.storage.uploadBuffer(key, file.buffer, file.mimetype);
+    let url: string;
+    try {
+      url = await this.storage.uploadBuffer(key, file.buffer, file.mimetype);
+    } catch (error: any) {
+      this.logger.error(`GCS upload failed for ${file.originalname}: ${error.message}`, error.stack);
+      throw new BadRequestException(`File upload failed: ${error.message}`);
+    }
 
-    // Extract text content for AI context (PDFs and images via Gemini)
+    // Extract text content for AI context
     let extractedContent: string | null = null;
-    if (isPdf || isImage) {
+    if (isTextFile) {
+      // Plain text — read buffer directly
+      extractedContent = file.buffer.toString('utf-8');
+    } else if (isPdf || isImage || isWordDoc) {
+      // Use Gemini Vision for PDFs, images, and Word docs
       extractedContent = await this.extractContent(file);
     }
 
     const resource = await this.prisma.project_resources.create({
       data: {
         projectId,
+        sessionId: sessionId || null,
         type,
         title: title || file.originalname || 'Untitled',
-        url: url.startsWith('http') ? key : url, // Store key for S3, full URL if public
+        url: url.startsWith('http') ? key : url,
         content: extractedContent,
         fileSize: file.size,
         mimeType: file.mimetype,
@@ -236,11 +263,11 @@ export class ProjectsService {
       data: { updatedAt: new Date() },
     });
 
-    this.logger.log(`Resource added to project ${projectId}: ${resource.id} (${type})`);
+    this.logger.log(`Resource added to project ${projectId}${sessionId ? ` session ${sessionId}` : ''}: ${resource.id} (${type})`);
     return this.formatResource(resource);
   }
 
-  async getResources(projectId: string, userId: string): Promise<ProjectResourceResponse[]> {
+  async getResources(projectId: string, userId: string, sessionId?: string): Promise<ProjectResourceResponse[]> {
     const project = await this.prisma.projects.findFirst({
       where: { id: projectId, userId },
     });
@@ -249,8 +276,19 @@ export class ProjectsService {
       throw new NotFoundException('Project not found');
     }
 
+    const whereClause: any = { projectId };
+    if (sessionId) {
+      // Session view: return both project-level (sessionId=null) AND this session's resources
+      whereClause.OR = [
+        { sessionId: null },
+        { sessionId },
+      ];
+      delete whereClause.projectId;
+      whereClause.AND = [{ projectId }];
+    }
+
     const resources = await this.prisma.project_resources.findMany({
-      where: { projectId },
+      where: sessionId ? { projectId, OR: [{ sessionId: null }, { sessionId }] } : { projectId },
       orderBy: { createdAt: 'desc' },
     });
 
@@ -294,12 +332,43 @@ export class ProjectsService {
     return { success: true };
   }
 
+  async getResourcePreviewUrl(
+    projectId: string,
+    resourceId: string,
+    userId: string,
+  ): Promise<{ url: string; mimeType: string | null; title: string }> {
+    const project = await this.prisma.projects.findFirst({
+      where: { id: projectId, userId },
+    });
+    if (!project) throw new NotFoundException('Project not found');
+
+    const resource = await this.prisma.project_resources.findFirst({
+      where: { id: resourceId, projectId },
+    });
+    if (!resource) throw new NotFoundException('Resource not found');
+    if (!resource.url) throw new NotFoundException('Resource has no file');
+
+    // If the URL is already a full public URL, return it directly
+    if (resource.url.startsWith('http')) {
+      return { url: resource.url, mimeType: resource.mimeType, title: resource.title };
+    }
+
+    // Generate a signed URL (valid for 1 hour)
+    const signedUrl = await this.storage.getSignedUrl(resource.url, 3600);
+    return { url: signedUrl, mimeType: resource.mimeType, title: resource.title };
+  }
+
   /**
    * Get all resource content for a project (used by chat service for AI context)
    */
-  async getResourceContext(projectId: string): Promise<string> {
+  async getResourceContext(projectId: string, sessionId?: string): Promise<string> {
+    // If sessionId provided, get project-level + session-level resources; otherwise all project resources
+    const whereClause = sessionId
+      ? { projectId, content: { not: null }, OR: [{ sessionId: null }, { sessionId }] as any }
+      : { projectId, content: { not: null } };
+
     const resources = await this.prisma.project_resources.findMany({
-      where: { projectId, content: { not: null } },
+      where: whereClause,
       select: { title: true, content: true, type: true },
     });
 
@@ -316,21 +385,6 @@ export class ProjectsService {
   }
 
   // ============ Helpers ============
-
-  private async verifySchoolStudent(userId: string): Promise<void> {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      include: { students: true },
-    });
-
-    if (!user || user.role !== 'STUDENT') {
-      throw new ForbiddenException('Only students can create projects');
-    }
-
-    if (!user.students?.schoolId) {
-      throw new ForbiddenException('Only school-affiliated students can use Projects');
-    }
-  }
 
   /**
    * Verify project ownership and return the project
@@ -391,6 +445,7 @@ export class ProjectsService {
     return {
       id: resource.id,
       projectId: resource.projectId,
+      sessionId: resource.sessionId || null,
       type: resource.type,
       title: resource.title,
       url: resource.url,

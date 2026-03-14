@@ -15,7 +15,7 @@ export const generationPrompts: PromptDefinition[] = [
     models: ['gemini-2.5-flash', 'gemini-flash-latest'],
     providerModels: {
       openai: ['gpt-4o-mini'],
-      anthropic: ['claude-haiku-4-20250414'],
+      anthropic: ['claude-haiku-4-5-20251001'],
     },
     outputFormat: 'text',
     variables: ['content'],
@@ -50,7 +50,7 @@ Respond in JSON format:
     models: ['gemini-2.5-flash', 'gemini-flash-latest'],
     providerModels: {
       openai: ['gpt-4o-mini'],
-      anthropic: ['claude-haiku-4-20250414'],
+      anthropic: ['claude-haiku-4-5-20251001'],
     },
     outputFormat: 'json',
     variables: ['conversationText'],

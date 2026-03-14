@@ -11,6 +11,7 @@ import {
   LlmContentPart,
 } from './llm.types';
 import { GeminiProvider } from './providers/gemini.provider';
+import { VertexProvider } from './providers/vertex.provider';
 import { AnthropicProvider } from './providers/anthropic.provider';
 import { OpenAIProvider } from './providers/openai.provider';
 import { DeepSeekProvider } from './providers/deepseek.provider';
@@ -26,20 +27,24 @@ export class LlmService {
     private readonly config: ConfigService,
     private readonly promptService: PromptService,
     gemini: GeminiProvider,
+    vertex: VertexProvider,
     anthropic: AnthropicProvider,
     openai: OpenAIProvider,
     deepseek: DeepSeekProvider,
   ) {
     // Register all providers
     this.providers.set('gemini', gemini);
+    this.providers.set('vertex', vertex);
     this.providers.set('anthropic', anthropic);
     this.providers.set('openai', openai);
     this.providers.set('deepseek', deepseek);
 
-    // Default provider: prefer anthropic if available, then env setting, then gemini
+    // Default provider priority: anthropic (paid) > vertex (paid Gemini) > env setting > gemini (free fallback)
     const envProvider = this.config.get<string>('LLM_PROVIDER', 'gemini') as LlmProvider;
     if (anthropic.isAvailable()) {
       this.defaultProvider = 'anthropic';
+    } else if (vertex.isAvailable()) {
+      this.defaultProvider = 'vertex';
     } else if (this.providers.get(envProvider)?.isAvailable()) {
       this.defaultProvider = envProvider;
     } else {
@@ -152,40 +157,80 @@ export class LlmService {
       generationConfig?: Record<string, any>;
       models: string[];
       provider?: LlmProvider;
+      webSearch?: boolean;
+      thinkingBudget?: number;
+      maxWebSearches?: number;
     },
   ): Promise<LlmResult> {
     const providerName = options.provider || this.defaultProvider;
-    const provider = this.getProvider(providerName);
+    const errors: string[] = [];
 
-    for (const model of options.models) {
-      try {
-        return await provider.generate(messages, {
-          model,
-          systemPrompt: options.systemPrompt,
-          generationConfig: options.generationConfig as any,
-        });
-      } catch (error: any) {
-        this.logger.warn(`[${providerName}] Model ${model} failed: ${error.message}`);
-        continue;
+    // Build common call options (reused for primary + fallback)
+    const makeCallOpts = (model: string): LlmCallOptions => ({
+      model,
+      systemPrompt: options.systemPrompt,
+      generationConfig: options.generationConfig as any,
+      webSearch: options.webSearch,
+      thinkingBudget: options.thinkingBudget,
+      maxWebSearches: options.maxWebSearches,
+    });
+
+    // ── Phase 1: try every model on the primary provider ──
+    const provider = this.providers.get(providerName);
+    if (provider?.isAvailable()) {
+      for (const model of options.models) {
+        try {
+          const result = await provider.generate(messages, makeCallOpts(model));
+          this.logger.log(`✅ [${providerName}] Generated with model: ${model}`);
+          return result;
+        } catch (error: any) {
+          const msg = `[${providerName}] Model ${model} failed: ${error.message}`;
+          this.logger.warn(msg);
+          errors.push(msg);
+        }
       }
+    } else {
+      const msg = `[${providerName}] Provider unavailable — skipping to fallback chain`;
+      this.logger.warn(msg);
+      errors.push(msg);
     }
 
-    // Cross-provider fallback: try gemini if primary provider failed
+    // ── Phase 2: cross-provider fallback chain ──
+    const fallbackChain: { provider: LlmProvider; model: string }[] = [];
+    if (providerName !== 'anthropic' && this.isProviderAvailable('anthropic')) {
+      fallbackChain.push({ provider: 'anthropic', model: 'claude-sonnet-4-20250514' });
+    }
+    if (providerName !== 'vertex' && this.isProviderAvailable('vertex')) {
+      fallbackChain.push({ provider: 'vertex', model: 'gemini-2.5-flash' });
+    }
     if (providerName !== 'gemini' && this.isProviderAvailable('gemini')) {
-      this.logger.warn(`[${providerName}] All models failed — falling back to gemini`);
+      fallbackChain.push({ provider: 'gemini', model: 'gemini-2.5-flash' });
+    }
+    if (providerName !== 'openai' && this.isProviderAvailable('openai')) {
+      fallbackChain.push({ provider: 'openai', model: 'gpt-4o-mini' });
+    }
+    if (providerName !== 'deepseek' && this.isProviderAvailable('deepseek')) {
+      fallbackChain.push({ provider: 'deepseek', model: 'deepseek-chat' });
+    }
+
+    for (const fallback of fallbackChain) {
+      this.logger.warn(`[${providerName}] All models failed — trying ${fallback.provider}`);
       try {
-        return await this.getProvider('gemini').generate(messages, {
-          model: 'gemini-2.5-flash',
-          systemPrompt: options.systemPrompt,
-          generationConfig: options.generationConfig as any,
-        });
+        const result = await this.getProvider(fallback.provider).generate(
+          messages,
+          makeCallOpts(fallback.model),
+        );
+        this.logger.log(`✅ [${fallback.provider}] Fallback generated with model: ${fallback.model}`);
+        return result;
       } catch (fallbackError: any) {
-        this.logger.error(`[gemini] Fallback also failed: ${fallbackError.message}`);
+        const msg = `[${fallback.provider}] Fallback also failed: ${fallbackError.message}`;
+        this.logger.error(msg);
+        errors.push(msg);
       }
     }
 
     throw new Error(
-      `All models failed for provider ${providerName}: [${options.models.join(', ')}]`,
+      `All providers/models exhausted. Provider: ${providerName}, models: [${options.models.join(', ')}]. Errors:\n${errors.join('\n')}`,
     );
   }
 
@@ -200,40 +245,79 @@ export class LlmService {
       generationConfig?: Record<string, any>;
       models: string[];
       provider?: LlmProvider;
+      webSearch?: boolean;
+      thinkingBudget?: number;
+      maxWebSearches?: number;
     },
   ): Promise<LlmStream> {
     const providerName = options.provider || this.defaultProvider;
-    const provider = this.getProvider(providerName);
+    const errors: string[] = [];
 
-    for (const model of options.models) {
-      try {
-        return await provider.stream(messages, {
-          model,
-          systemPrompt: options.systemPrompt,
-          generationConfig: options.generationConfig as any,
-        });
-      } catch (error: any) {
-        this.logger.warn(`[${providerName}] Stream model ${model} failed: ${error.message}`);
-        continue;
+    const makeCallOpts = (model: string): LlmCallOptions => ({
+      model,
+      systemPrompt: options.systemPrompt,
+      generationConfig: options.generationConfig as any,
+      webSearch: options.webSearch,
+      thinkingBudget: options.thinkingBudget,
+      maxWebSearches: options.maxWebSearches,
+    });
+
+    // ── Phase 1: try every model on the primary provider ──
+    const provider = this.providers.get(providerName);
+    if (provider?.isAvailable()) {
+      for (const model of options.models) {
+        try {
+          const stream = await provider.stream(messages, makeCallOpts(model));
+          this.logger.log(`✅ [${providerName}] Streaming with model: ${model}`);
+          return stream;
+        } catch (error: any) {
+          const msg = `[${providerName}] Stream model ${model} failed: ${error.message}`;
+          this.logger.warn(msg);
+          errors.push(msg);
+        }
       }
+    } else {
+      const msg = `[${providerName}] Provider unavailable — skipping to fallback chain`;
+      this.logger.warn(msg);
+      errors.push(msg);
     }
 
-    // Cross-provider fallback: try gemini if primary provider failed
+    // ── Phase 2: cross-provider fallback chain ──
+    const fallbackChain: { provider: LlmProvider; model: string }[] = [];
+    if (providerName !== 'anthropic' && this.isProviderAvailable('anthropic')) {
+      fallbackChain.push({ provider: 'anthropic', model: 'claude-sonnet-4-20250514' });
+    }
+    if (providerName !== 'vertex' && this.isProviderAvailable('vertex')) {
+      fallbackChain.push({ provider: 'vertex', model: 'gemini-2.5-flash' });
+    }
     if (providerName !== 'gemini' && this.isProviderAvailable('gemini')) {
-      this.logger.warn(`[${providerName}] All stream models failed — falling back to gemini`);
+      fallbackChain.push({ provider: 'gemini', model: 'gemini-2.5-flash' });
+    }
+    if (providerName !== 'openai' && this.isProviderAvailable('openai')) {
+      fallbackChain.push({ provider: 'openai', model: 'gpt-4o-mini' });
+    }
+    if (providerName !== 'deepseek' && this.isProviderAvailable('deepseek')) {
+      fallbackChain.push({ provider: 'deepseek', model: 'deepseek-chat' });
+    }
+
+    for (const fallback of fallbackChain) {
+      this.logger.warn(`[${providerName}] All stream models failed — trying ${fallback.provider}`);
       try {
-        return await this.getProvider('gemini').stream(messages, {
-          model: 'gemini-2.5-flash',
-          systemPrompt: options.systemPrompt,
-          generationConfig: options.generationConfig as any,
-        });
+        const stream = await this.getProvider(fallback.provider).stream(
+          messages,
+          makeCallOpts(fallback.model),
+        );
+        this.logger.log(`✅ [${fallback.provider}] Fallback streaming with model: ${fallback.model}`);
+        return stream;
       } catch (fallbackError: any) {
-        this.logger.error(`[gemini] Stream fallback also failed: ${fallbackError.message}`);
+        const msg = `[${fallback.provider}] Stream fallback also failed: ${fallbackError.message}`;
+        this.logger.error(msg);
+        errors.push(msg);
       }
     }
 
     throw new Error(
-      `All stream models failed for provider ${providerName}: [${options.models.join(', ')}]`,
+      `All stream providers/models exhausted. Provider: ${providerName}, models: [${options.models.join(', ')}]. Errors:\n${errors.join('\n')}`,
     );
   }
 
@@ -273,11 +357,18 @@ export class LlmService {
     return this.providers.get(provider)?.isAvailable() ?? false;
   }
 
-  /** List all available providers */
+  /** List all available providers, default provider first */
   getAvailableProviders(): LlmProvider[] {
-    return Array.from(this.providers.entries())
+    const available = Array.from(this.providers.entries())
       .filter(([, p]) => p.isAvailable())
       .map(([name]) => name);
+    // Ensure the default provider is tried first
+    const idx = available.indexOf(this.defaultProvider);
+    if (idx > 0) {
+      available.splice(idx, 1);
+      available.unshift(this.defaultProvider);
+    }
+    return available;
   }
 
   /** Get the resolved prompt with the default provider applied */

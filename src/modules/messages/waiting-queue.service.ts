@@ -25,8 +25,8 @@ export interface WaitingQueueInfo {
   }>;
 }
 
-// 2 minutes waiting threshold before notifying busy tutors
-const WAITING_THRESHOLD_MS = 2 * 60 * 1000;
+// 1 minute waiting threshold before notifying busy tutors
+const WAITING_THRESHOLD_MS = 1 * 60 * 1000;
 // How often to check for waiting queue timeouts
 const CHECK_INTERVAL_MS = 30 * 1000;
 

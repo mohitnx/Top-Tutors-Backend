@@ -14,9 +14,11 @@ export type PromptId =
   | 'quiz-generation'
   | 'resource-text-extraction'
   | 'audio-transcription'
-  | 'message-classification';
+  | 'message-classification'
+  | 'deep-think'
+  | 'deep-research';
 
-export type LlmProvider = 'gemini' | 'openai' | 'anthropic' | 'deepseek';
+export type LlmProvider = 'gemini' | 'vertex' | 'openai' | 'anthropic' | 'deepseek';
 
 /** Model-agnostic generation config with optional provider-specific overrides */
 export interface GenerationConfig {

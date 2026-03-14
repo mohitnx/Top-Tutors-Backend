@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e \":*)",
+      "Bash(grep -r \"AWS_S3_BUCKET\\\\|GCS_BUCKET\" f:Top-Tutors-Backend --include=*.ts --include=*.env*)",
+      "Bash(DATABASE_URL='postgresql://neondb_owner:npg_DJNwiQ85zKZH@ep-delicate-rain-a1xlho2s.ap-southeast-1.aws.neon.tech/neondb?sslmode=require' npx prisma db push --accept-data-loss)",
+      "Bash(dotenv -e /dev/null -- env DATABASE_URL='postgresql://neondb_owner:npg_DJNwiQ85zKZH@ep-delicate-rain-a1xlho2s-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require' DIRECT_DATABASE_URL='postgresql://neondb_owner:npg_DJNwiQ85zKZH@ep-delicate-rain-a1xlho2s.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require' npx prisma db push --accept-data-loss --skip-generate)",
+      "Bash(npm ls:*)",
+      "Bash(npm search:*)",
+      "Bash(npm install:*)",
+      "Bash(npm uninstall:*)",
+      "Read(//f:/Top-Tutors-Backend/src/**)",
+      "Bash(xargs wc:*)",
+      "Bash(netstat -ano)",
+      "Bash(taskkill //PID 61100 //F)",
+      "Bash(find /f/Top-Tutors-Backend -maxdepth 1 -name .env* -type f)"
+    ]
+  }
+}

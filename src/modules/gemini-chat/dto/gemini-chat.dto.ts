@@ -103,6 +103,31 @@ export class SendMessageDto {
   @IsOptional()
   @IsBoolean()
   stream?: boolean = false;
+
+  @ApiPropertyOptional({ description: 'Enable deep thinking mode (extended step-by-step reasoning)' })
+  @IsOptional()
+  @IsBoolean()
+  deepThink?: boolean;
+
+  @ApiPropertyOptional({ description: 'Enable deep research mode (web search + source synthesis)' })
+  @IsOptional()
+  @IsBoolean()
+  deepResearch?: boolean;
+
+  @ApiPropertyOptional({ description: 'Enable council mode (3-expert deliberation) for this message' })
+  @IsOptional()
+  @IsBoolean()
+  council?: boolean;
+
+  @ApiPropertyOptional({ description: 'Project ID to inject study materials context from' })
+  @IsOptional()
+  @IsUUID()
+  projectId?: string;
+
+  @ApiPropertyOptional({ description: 'Enable read-aloud: AI insights spoken during thinking, full answer spoken after streaming' })
+  @IsOptional()
+  @IsBoolean()
+  readAloud?: boolean;
 }
 
 export class SendAudioMessageDto {
@@ -110,6 +135,11 @@ export class SendAudioMessageDto {
   @IsOptional()
   @IsString()
   sessionId?: string;
+
+  @ApiPropertyOptional({ description: 'Enable read-aloud: AI insights spoken during thinking, full answer spoken after streaming' })
+  @IsOptional()
+  @IsBoolean()
+  readAloud?: boolean;
 }
 
 export class RetryMessageDto {
@@ -194,7 +224,7 @@ export interface MessageResponse {
 }
 
 export interface StreamChunk {
-  type: 'start' | 'chunk' | 'heartbeat' | 'end' | 'error';
+  type: 'start' | 'chunk' | 'heartbeat' | 'end' | 'error' | 'status';
   messageId: string;
   sessionId: string;
   content?: string;
@@ -206,6 +236,54 @@ export interface StreamChunk {
     promptTokens: number;
     completionTokens: number;
   };
+
+  // ── Enhanced UX fields (shown persistently at top of answer) ──
+
+  /** The AI mode that produced this response */
+  mode?: 'single' | 'deep-think' | 'deep-research' | 'council';
+
+  /**
+   * Ordered list of thinking/processing steps so far.
+   * Frontend renders these persistently above the answer at reduced opacity.
+   * Each entry is appended as the LLM progresses (never removed).
+   */
+  thinkingTrace?: string[];
+
+  /**
+   * Deep Research: web sources the LLM visited / cited.
+   * Populated progressively via status chunks.
+   */
+  sources?: { title: string; url?: string }[];
+
+  /**
+   * SAP Report: auto-generated PDF download info.
+   * Present only on the 'end' chunk when a SAP report was generated.
+   * Frontend should render a download button with href = downloadUrl.
+   */
+  reportDownload?: {
+    downloadUrl: string;
+    filename: string;
+    messageId: string;
+  };
+
+  /**
+   * Council mode: which expert is currently active.
+   */
+  activeExpert?: string;
+
+  /**
+   * Provider that actually served this response (for debugging / logging).
+   * e.g. 'anthropic', 'vertex', 'gemini'
+   */
+  provider?: string;
+
+  /**
+   * When true, the frontend should use SpeechSynthesis to:
+   * 1. Read aloud 'status' messages (AI insight phases) as they arrive
+   * 2. Read aloud the full answer after the 'end' chunk
+   * The user can stop playback at any time.
+   */
+  readAloud?: boolean;
 }
 
 export interface TutorStatusUpdate {

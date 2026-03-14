@@ -1,26 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { TextToSpeechClient } from '@google-cloud/text-to-speech';
 import { AnsweredQuestion } from './answer-generation.service';
 import { Subject } from '@prisma/client';
 
 @Injectable()
 export class TtsService {
   private readonly logger = new Logger(TtsService.name);
-  private client: TextToSpeechClient | null = null;
-
-  constructor(private readonly config: ConfigService) {
-    const apiKey = config.get<string>('GOOGLE_CLOUD_TTS_KEY');
-    if (apiKey) {
-      this.client = new TextToSpeechClient({ apiKey });
-    } else {
-      this.logger.warn('GOOGLE_CLOUD_TTS_KEY not set — TTS generation disabled');
-    }
-  }
 
   async generateAudio(questions: AnsweredQuestion[], subject: Subject, date: Date): Promise<Buffer | null> {
-    if (!this.client) return null;
-
     const dateStr = date.toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
     const lines: string[] = [
       `Welcome to your ${subject} Daily Learning Package for ${dateStr}.`,
@@ -37,38 +23,17 @@ export class TtsService {
 
     const text = lines.join(' ');
 
-    // TTS has 5000 char limit per request — chunk if needed
-    const MAX_CHARS = 4900;
-    const chunks = this.chunkText(text, MAX_CHARS);
-    const audioBuffers: Buffer[] = [];
-
-    for (const chunk of chunks) {
-      try {
-        const [response] = await this.client.synthesizeSpeech({
-          input: { text: chunk },
-          voice: { languageCode: 'en-US', name: 'en-US-Neural2-D' },
-          audioConfig: { audioEncoding: 'MP3' },
-        });
-
-        if (response.audioContent) {
-          audioBuffers.push(Buffer.from(response.audioContent as Uint8Array));
-        }
-      } catch (err) {
-        this.logger.error(`TTS synthesis failed for chunk: ${err.message}`);
-      }
+    try {
+      const { tts } = await import('edge-tts');
+      const audioBuffer = await tts(text, {
+        voice: 'en-US-AriaNeural',
+        rate: '-5%',
+      });
+      this.logger.log(`TTS audio generated: ${(audioBuffer.length / 1024).toFixed(1)} KB`);
+      return Buffer.from(audioBuffer);
+    } catch (err) {
+      this.logger.error(`TTS synthesis failed: ${err.message}`);
+      return null;
     }
-
-    return audioBuffers.length > 0 ? Buffer.concat(audioBuffers) : null;
-  }
-
-  private chunkText(text: string, maxChars: number): string[] {
-    if (text.length <= maxChars) return [text];
-    const chunks: string[] = [];
-    let i = 0;
-    while (i < text.length) {
-      chunks.push(text.slice(i, i + maxChars));
-      i += maxChars;
-    }
-    return chunks;
   }
 }
