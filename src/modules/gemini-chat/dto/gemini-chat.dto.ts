@@ -229,6 +229,12 @@ export interface StreamChunk {
   sessionId: string;
   /** Unique stream ID — use with cancelStream event to stop generation */
   streamId?: string;
+
+  /**
+   * When true, the stream has not received new content for 30+ seconds.
+   * Present on 'heartbeat' chunks. Frontend should show a retry button.
+   */
+  stalled?: boolean;
   content?: string;
   fullContent?: string;
   message?: string; // status/heartbeat text for UI

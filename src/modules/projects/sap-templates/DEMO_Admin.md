@@ -1,116 +1,185 @@
-# DEMO REPORT — ADMINISTRATION
+# SAP ADMINISTRATION DASHBOARD GENERATOR
+
+You generate the Principal's Daily Dashboard from school-wide data. Follow these instructions exactly. Do not add sections not specified here.
 
 ---
 
-**PRINCIPAL'S DAILY DASHBOARD**
+## CRITICAL FORMATTING RULES
 
-| | | | |
-|---|---|---|---|
-| Principal: **Hom Nath Acharya** | Total Students: **1,248** | Faculty: **82** | Date: **18 March 2026** |
-
----
-
-| **962** | **81%** | **5.3** | **Lv 3.0** | **9** |
-|---|---|---|---|---|
-| Total Questions | Student Participation | School Avg Quality | School Level | At-Risk Students |
+1. DO NOT use any special unicode characters. No arrows, stars, or warning symbols. Use UP, DOWN, STEADY for trends. Use plain text only.
+2. DO NOT name individual students anywhere in this report. Use counts by grade only (e.g., "12 students across Gr 8-10").
+3. DO NOT fabricate data. If a metric is not provided, write "--".
+4. DO NOT add extra pages or repeated footers. Report ends at the footer.
+5. Keep total report to 2-3 pages maximum.
+6. Tone: strategic, data-dense, no emotional language, no honorifics.
+7. QQS values: 1 decimal place. School Pulse: integer out of 100.
 
 ---
 
-**SCHOOL PULSE — 78 / 100**
+## FORMULAS
 
-**Today's Headline**
+School Pulse Score (0-100):
+```
+SchoolPulse = round( 100 x [ 0.25 x P + 0.25 x Q + 0.20 x (1-R) + 0.15 x (1-MC) + 0.15 x T ] )
+```
+P = participation rate, Q = avg QQS / 10, R = at-risk rate, MC = misconception load (capped at 1.0), T = teacher usage rate. All normalised 0-1.
 
-> School participation reached **81%** — the highest since SAP launched 6 weeks ago and well above the 75% term target. Grade 9 is the week's top improver (+14% engagement, +0.5 QQS), likely driven by pre-SEE motivation hitting this cohort early. Mathematics Department leads both volume and quality for the third consecutive week. Science Department still carries the highest misconception load (7 active clusters), but resolved 2 clusters this week after targeted demos — the intervention approach is working. 9 students across Grades 8–11 remain at-risk, down from 15 last week. A-Level cohort continues to lead quality at 6.4 average — operating firmly at Analyst level.
+Score labels: 0-39 Critical, 40-54 Concern, 55-69 Developing, 70-84 Healthy, 85-100 Thriving
 
----
+Department Health:
+```
+DeptHealth = QQS_norm x 0.5 + ParticipationRate x 0.3 + (1 - MisconceptionRate) x 0.2
+```
+Labels: 0.80+ Thriving, 0.65-0.79 Healthy, 0.50-0.64 Watch, 0.35-0.49 Monitor, below 0.35 Concern
 
-**School Command Center — Grade-Wise**
+Gender Parity Index: GPI = Female Avg QQS / Male Avg QQS. Parity = 0.95-1.05.
 
-| **Grade** | **Total** | **Active** | **Rate** | **Qs** | **Avg QQS** | **Trend** | **Level** | **Key Signal** |
-|---|---|---|---|---|---|---|---|---|
-| **Gr 5** | 148 | 126 | **85%** | 108 | 4.0 | ⬆ | Lv 2 Builder | Strongest basic participation |
-| **Gr 6** | 144 | 118 | **82%** | 96 | 4.2 | ➡ | Lv 2 Builder | Steady — onboarding complete |
-| **Gr 7** | 152 | 130 | **86%** | 124 | 4.5 | ⬆ | Lv 2 Builder | Highest participation rate |
-| **Gr 8** | 146 | 120 | **82%** | 112 | 4.8 | ⬆ | Lv 2 Builder | Quality rising pre-district exams |
-| **Gr 9** | 140 | 118 | **84%** | 108 | 5.4 | ⬆ | Lv 3 Explorer | Week's top improver |
-| **Gr 10** | 136 | 112 | **82%** | 122 | 5.6 | ➡ | Lv 3 Explorer | SEE prep driving volume |
-| **Gr 11** | 112 | 84 | **75%** | 88 | 5.9 | ➡ | Lv 3 Explorer | NEB Year 1 — steady |
-| **Gr 12** | 102 | 74 | **73%** | 78 | 5.8 | ➡ | Lv 3 Explorer | Pre-board stress managed |
-| **A-Lvl** | 68 | 52 | **76%** | 62 | 6.4 | ⬆ | Lv 4 Analyst | Highest quality cohort |
-| **TOTAL** | **1,248** | **934** | **81%** | **962** | **5.3** | **⬆** | **Lv 3.0** | **Strong positive** |
+Levels: Lv 1 Starter (1.0-3.9), Lv 2 Builder (4.0-5.4), Lv 3 Explorer (5.5-6.9), Lv 4 Analyst (7.0-8.4), Lv 5 Innovator (8.5-10.0)
 
----
-
-**Department Performance Board**
-
-*Ranked by learning impact (quality × engagement). No competition — for resource allocation decisions.*
-
-| **#** | **Department** | **Qs** | **QQS** | **Misc.** | **Trend** | **Health** | **Insight** |
-|---|---|---|---|---|---|---|---|
-| **1** | **Mathematics** | 192 | 5.5 | 3 | ⬆ +10% | **Thriving** | Trig + mensuration driving Gr 9–10 |
-| **2** | **Science** | 168 | 5.2 | 7 | ⬆ +6% | **Watch** | 7 misconceptions — down from 9 last week |
-| **3** | **English** | 138 | 4.9 | 3 | ➡ Steady | **Healthy** | Reported speech peaking pre-SEE |
-| **4** | **Social Studies** | 102 | 5.1 | 2 | ⬆ +15% | **Thriving** | Urbanisation + federalism trending |
-| **5** | **Nepali** | 88 | 4.6 | 2 | ➡ Steady | **Healthy** | Grammar quality improving |
-| **6** | **Physics** | 72 | 6.2 | 2 | ⬆ +8% | **Thriving** | A-Level + Gr 12 excelling |
-| **7** | **Chemistry** | 64 | 5.9 | 2 | ➡ Steady | **Healthy** | Electrochemistry focus this week |
-| **8** | **Biology** | 48 | 5.6 | 1 | ⬆ +4% | **Healthy** | Recovering from last week's dip |
-| **9** | **Computer Sc.** | 38 | 5.3 | 1 | ➡ Steady | **Healthy** | Python + networking focused |
-| **10** | **Opt. Math** | 28 | 5.8 | 0 | ⬆ +6% | **Thriving** | Small but high-quality cohort |
-| **11** | **Health & PE** | 18 | 3.9 | 0 | ➡ Steady | **Monitor** | Low volume — 2% of total Qs |
-| **12** | **Arts/Music** | 6 | 3.5 | 0 | ⬇ -20% | **Concern** | <1% of questions — needs strategy |
+Trends: UP = improved 0.3+ QQS from last week. STEADY = within 0.3. DOWN = declined 0.3+. "--" = no prior data.
 
 ---
 
-**Priority Alerts**
+## REPORT STRUCTURE
 
-| **Level** | **Alert** | **Action Required** |
-|---|---|---|
-| **URGENT** | Science Dept: 7 active misconception clusters (bacteria/virus confusion affects 22+ students in Gr 8) | Dept meeting this week — 2 clusters resolved last week, prioritise next 2 |
-| **HIGH** | 9 students across Gr 8–11 at-risk (down from 15 last week) — 4 are newly inactive this week | House tutors to confirm check-ins by Wednesday |
-| **MEDIUM** | Arts/Music department at <1% of total questions — SAP adoption has not reached this department | Dept heads to propose integration plan — perhaps visual/audio questions |
-| **MEDIUM** | Health & PE at 2% of total questions — holding steady but not growing | Consider structured "body science" question prompts tied to PE classes |
-| **WATCH** | Grade 12 NEB engagement holding at 73% — stable but below school average | Monitor — pre-board exams next month may cause dip |
-| **POSITIVE** | Grade 9: strongest weekly improvement (+14% engagement, +0.5 QQS) — pre-SEE motivation | Sustain momentum — share success with Grade 9 teachers |
-| **POSITIVE** | Science misconception load reduced from 9 → 7 clusters after targeted interventions | Intervention model is working — apply to other departments |
-| **MILESTONE** | School participation crossed 80% for the first time — 81% today vs 58% at SAP launch | Acknowledge in morning assembly. Share with SMC/parents committee. |
+Exactly 10 sections in this order.
+
+### SECTION 1: HEADER
+
+```
+PRINCIPAL'S DAILY DASHBOARD
+
+Principal: [Name]  |  Total Students: [N]  |  Faculty: [N]  |  Date: [DD Month YYYY]
+```
+
+### SECTION 2: HEADLINE METRICS
+
+Exactly 5 values:
+```
+[N] Total Questions  |  [X]% Student Participation  |  [X.X] School Avg Quality  |  Lv [X.X] School Level  |  [N] At-Risk Students
+```
+
+### SECTION 3: SCHOOL PULSE
+
+```
+SCHOOL PULSE -- [Score] / 100
+
+Today's Headline:
+[One paragraph, 4-6 sentences]
+```
+
+Paragraph must include:
+1. Participation rate with comparison to programme start
+2. Top improving grade this week with metric
+3. Biggest systemic concern (e.g., misconception load, engagement decline)
+4. At-risk summary: count and grade range (NO names)
+5. Quality leader: which grade/cohort leads and their specific QQS
+
+### SECTION 4: GRADE-WISE COMMAND CENTER
+
+```
+| Grade | Total | Active | Rate | Qs | Avg QQS | Trend | Level | Key Signal |
+```
+
+- One row per grade band. Last row = TOTAL with school-wide aggregates.
+- Sorted by grade ascending (youngest first).
+- Key Signal = 8 words or fewer.
+- Trend: UP, STEADY, DOWN, or "--"
+
+### SECTION 5: DEPARTMENT PERFORMANCE BOARD
+
+Title line (mandatory):
+```
+Department Performance Board
+Ranked by learning impact. For resource allocation decisions only.
+```
+
+```
+| # | Department | Qs | QQS | Misc | Trend | Health | Insight |
+```
+
+- Ranked by (QQS x Participation) descending.
+- Trend: "UP +X%", "STEADY", "DOWN -X%"
+- Health: Thriving / Healthy / Watch / Monitor / Concern
+- Insight: 8 words or fewer.
+- Show ALL departments.
+
+### SECTION 6: PRIORITY ALERTS
+
+```
+| Level | Alert | Action Required |
+```
+
+Sorted: URGENT, HIGH, MEDIUM, WATCH, POSITIVE, MILESTONE.
+- NEVER name students. Use grade + count.
+- Action Required = specific action + who does it.
+- Include at least 1 POSITIVE or MILESTONE when data supports it.
+- Show 5-8 alerts.
+
+Alert criteria:
+- URGENT: students silent 3+ days, or misconception 20%+ of a class
+- HIGH: engagement decline 15%+ week-over-week
+- MEDIUM: department adoption below 5%, minor trends
+- WATCH: small dips, early signals
+- POSITIVE: notable improvements
+- MILESTONE: school-wide threshold crossed
+
+### SECTION 7: SCHOOL HEALTH SCORECARD
+
+```
+School Health Scorecard
+```
+
+Exactly these 8 metrics in this order:
+```
+| Metric | Today | Last Week | Change | Status | Term Target |
+| Daily Participation | [X]% | [X]% | +/-X% | UP/STEADY/DOWN | 75%+ |
+| Avg Question Quality | [X.X] | [X.X] | +/-X.X | UP/STEADY/DOWN | 5.0+ |
+| At-Risk Students | [N] | [N] | +/-N | UP/STEADY/DOWN | below 15 |
+| Misconception Clusters | [N] | [N] | +/-N | UP/STEADY/DOWN | below 20 |
+| Productive Struggle % | [X]% | [X]% | +/-X% | UP/STEADY/DOWN | 60%+ |
+| Question Depth (Bloom 4+) | [X]% | [X]% | +/-X% | UP/STEADY/DOWN | 30%+ |
+| Teacher Brief Usage | [X/Y] | [X/Y] | +/-N | UP/STEADY/DOWN | Y/Y |
+| Gender Parity Index | [X.XX] | [X.XX] | +/-X.XX | UP/STEADY/DOWN | 0.95+ |
+```
+
+Status UP means improving (for At-Risk, a decrease is UP because fewer is better).
+
+### SECTION 8: WEEK AHEAD -- PREDICTIONS
+
+```
+| Signal | Prediction | Confidence | Preemptive Action |
+```
+
+- 4-6 predictions. Signal: UP, DOWN, STEADY, or WARNING.
+- Confidence: High (80%+), Medium (60-79%), Low (below 60%)
+- Include 1+ positive and 1+ concern.
+- If below 3 weeks of data: all Low confidence with note.
+
+### SECTION 9: CLOSING
+
+```
+Every question asked is a student choosing to learn. Today, [N] students made that choice.
+```
+
+Replace [N] with active student count.
+
+### SECTION 10: FOOTER
+
+```
+SAP | Self-Study Assistance Program | TopTutors Private Limited
+```
+
+This is the last line. Nothing after this.
 
 ---
 
-**School Health Scorecard**
+## WHAT NOT TO DO
 
-*Key metrics tracked daily. Values compound over time — the longer the data, the more accurate the picture.*
-
-| **Metric** | **Today** | **Last Week** | **Change** | **Status** | **Term Target** |
-|---|---|---|---|---|---|
-| **Daily Participation** | **81%** | 76% | +5% | **⬆** | ≥75% ✓ |
-| **Avg Question Quality** | **5.3** | 5.0 | +0.3 | **⬆** | ≥5.0 ✓ |
-| **At-Risk Students** | **9** | 15 | −6 | **⬆** | <15 ✓ |
-| **Misconception Clusters** | **22** | 26 | −4 | **⬆** | <20 |
-| **Productive Struggle %** | **64%** | 60% | +4% | **⬆** | ≥60% ✓ |
-| **Question Depth (% Bloom 4+)** | **30%** | 26% | +4% | **⬆** | ≥30% ✓ |
-| **Teacher Brief Usage** | **74/82** | 70/82 | +4 | **⬆** | 82/82 |
-| **Gender Parity Index** | **0.96** | 0.94 | +0.02 | **⬆** | ≥0.95 ✓ |
-
-*Six of eight term targets met as of today. Misconception clusters (22 vs target <20) and teacher usage (74/82 vs target 82/82) remain the two open gaps.*
-
----
-
-**Week Ahead — Pattern Predictions**
-
-*Based on 6-week trend analysis and seasonal patterns:*
-
-| **Signal** | **Prediction** | **Confidence** | **Preemptive Action** |
-|---|---|---|---|
-| **⬆** | Participation will hold above 80% through end of March — SAP habit formation is consolidating | High (91%) | Maintain current rhythm; avoid changes |
-| **⬆** | Grade 9 engagement will continue climbing as SEE awareness peaks | High (88%) | Channel energy into quality, not just volume |
-| **⬆** | Science misconception load will reach target (<20) by end of March if 2 clusters/week are resolved | High (85%) | Continue weekly dept meeting + targeted demos |
-| **⬇** | Grade 12 engagement will dip 5–8% during pre-board exam week (April 1st week) | Medium (74%) | VP-Academic to coordinate reduced-load schedule |
-| **⬆** | At-risk count will drop to ≤6 if house tutor check-ins continue at current rate | Medium (70%) | Confirm check-in protocol is sustained |
-| **⚠** | Arts/Music adoption will remain <1% without structural change to question format | High (90%) | Dept head meeting to explore visual/audio question types |
-
----
-
-*Every question asked is a student choosing to learn. Today, 934 students made that choice.*
-
-SAP — Self-Study Assistance Program — TopTutors Private Limited
+- DO NOT name individual students anywhere
+- DO NOT add sections not listed above
+- DO NOT use emoji or unicode symbols for trends or alerts
+- DO NOT repeat the footer on multiple pages
+- DO NOT exceed 3 pages
+- DO NOT use emotional language ("we're thrilled", "exciting progress")
+- DO NOT fabricate department or grade data

@@ -686,6 +686,9 @@ export class ProjectChatService {
     },
   ): Promise<void> {
     const heartbeatIntervalMs = 5000;
+    const totalTimeoutMs = 6 * 60 * 1000; // 6 minutes max
+    const idleTimeoutMs = 45 * 1000; // 45 seconds no new content
+    const startedAtMs = Date.now();
     let heartbeatTimer: NodeJS.Timeout | null = null;
 
     try {
@@ -705,7 +708,8 @@ export class ProjectChatService {
       // Build system prompt: for project-chat use project-specific prompt, for deep modes use resolved
       let systemPrompt: string;
       if (promptId === 'project-chat') {
-        systemPrompt = this.buildProjectSystemPrompt(project);
+        const hasFiles = attachments?.some(f => f.mimetype.startsWith('image/') || f.mimetype === 'application/pdf') || false;
+        systemPrompt = this.buildProjectSystemPrompt(project, hasFiles);
       } else {
         systemPrompt = resolved.systemPrompt || '';
         // Append project context for deep modes too
@@ -733,6 +737,7 @@ export class ProjectChatService {
 
       // SAP: always flag — the LLM decides whether to generate a report
       const isSapReport = isSap;
+      const sapHasFiles = isSap && (attachments?.some(f => f.mimetype.startsWith('image/') || f.mimetype === 'application/pdf') || false);
 
       // Emit start with mode-specific message
       const startMessage = options?.deepThink
@@ -843,6 +848,8 @@ export class ProjectChatService {
 
         const now = Date.now();
         const waitingMs = now - streamData.lastActivityAtMs;
+        const isStalled = waitingMs > 30000;
+
         emitter.emit('chunk', {
           type: 'heartbeat',
           messageId,
@@ -850,10 +857,10 @@ export class ProjectChatService {
           projectId: project.id,
           fullContent: streamData.content,
           waitingMs,
-          message:
-            waitingMs > 30000
-              ? 'Still working… this is taking longer than usual'
-              : 'Still working…',
+          stalled: isStalled || undefined,
+          message: isStalled
+            ? 'Taking longer than expected… you can retry if needed'
+            : 'Still working…',
         } as ProjectStreamChunk);
       }, heartbeatIntervalMs);
 
@@ -866,6 +873,16 @@ export class ProjectChatService {
           wasCancelled = true;
           this.logger.log(`Stream ${streamId} breaking due to cancellation`);
           break;
+        }
+
+        // Total timeout
+        if (Date.now() - startedAtMs > totalTimeoutMs) {
+          throw new Error('Generation timed out (took too long)');
+        }
+
+        // Idle timeout — no new content for 90 seconds
+        if (sd && (Date.now() - sd.lastActivityAtMs > idleTimeoutMs) && fullContent.length > 0) {
+          throw new Error('Stream stalled — no new content received');
         }
 
         fullContent += chunkText;
@@ -899,7 +916,9 @@ export class ProjectChatService {
 
       // SAP report handling
       let reportDownload: ProjectStreamChunk['reportDownload'] | undefined;
-      const isActualReport = !wasCancelled && isSapReport && this.looksLikeReport(fullContent);
+      // SAP + images = ALWAYS generate PDF. No exceptions.
+      const isActualReport = !wasCancelled && isSapReport &&
+        (sapHasFiles ? fullContent.length > 50 : this.looksLikeReport(fullContent));
 
       // SAP: if content was suppressed but it's NOT a report, emit full content now
       if (isSapReport && !isActualReport && !wasCancelled) {
@@ -913,7 +932,13 @@ export class ProjectChatService {
         } as ProjectStreamChunk);
       }
 
-      if (isActualReport) {
+      // Re-check cancel flag before PDF generation
+      const cancelledDuringStream = this.activeStreams.get(streamId)?.cancelled;
+      if (cancelledDuringStream) {
+        wasCancelled = true;
+      }
+
+      if (isActualReport && !wasCancelled) {
         emitter.emit('chunk', {
           type: 'status',
           messageId,
@@ -925,19 +950,25 @@ export class ProjectChatService {
         try {
           const reportMarkdown = this.stripPreamble(fullContent);
           const pdfBuffer = await this.renderMarkdownToPdf(reportMarkdown, project.title);
-          const dateStr = new Date().toISOString().slice(0, 10);
-          const filename = `SAP-Report-${dateStr}.pdf`;
 
-          try {
-            const gcsKey = `sap-reports/${project.id}/${messageId}/${filename}`;
-            const downloadUrl = await this.storage.uploadBuffer(gcsKey, pdfBuffer, 'application/pdf');
-            reportDownload = { downloadUrl, filename, messageId };
-            this.logger.log(`SAP report PDF uploaded to GCS: ${gcsKey}`);
-          } catch (uploadError: any) {
-            this.logger.warn(`GCS upload failed, serving from backend cache: ${uploadError.message}`);
-            const cacheKey = this.cachePdf(pdfBuffer, filename);
-            const downloadUrl = `/api/v1/projects/sap-report/${cacheKey}/download`;
-            reportDownload = { downloadUrl, filename, messageId };
+          if (this.activeStreams.get(streamId)?.cancelled) {
+            wasCancelled = true;
+            this.logger.log(`Stream ${streamId} cancelled during PDF generation`);
+          } else {
+            const dateStr = new Date().toISOString().slice(0, 10);
+            const filename = `SAP-Report-${dateStr}.pdf`;
+
+            try {
+              const gcsKey = `sap-reports/${project.id}/${messageId}/${filename}`;
+              const downloadUrl = await this.storage.uploadBuffer(gcsKey, pdfBuffer, 'application/pdf');
+              reportDownload = { downloadUrl, filename, messageId };
+              this.logger.log(`SAP report PDF uploaded to GCS: ${gcsKey}`);
+            } catch (uploadError: any) {
+              this.logger.warn(`GCS upload failed, serving from backend cache: ${uploadError.message}`);
+              const cacheKey = this.cachePdf(pdfBuffer, filename);
+              const downloadUrl = `/api/v1/projects/sap-report/${cacheKey}/download`;
+              reportDownload = { downloadUrl, filename, messageId };
+            }
           }
         } catch (pdfError: any) {
           this.logger.error(`Failed to generate SAP report PDF: ${pdfError.message}`);
@@ -1014,6 +1045,7 @@ export class ProjectChatService {
       } as ProjectStreamChunk);
     } finally {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
+      emitter.removeAllListeners();
     }
   }
 
@@ -1365,7 +1397,7 @@ export class ProjectChatService {
     // SAP Report: auto-generate PDF for council mode too
     let reportDownload: ProjectStreamChunk['reportDownload'] | undefined;
     const isSapReport = this.isSapProject(project);
-    if (isSapReport && this.looksLikeReport(fullContent)) {
+    if (isSapReport && (fullContent.length > 200 || this.looksLikeReport(fullContent))) {
       try {
         const pdfBuffer = await this.renderMarkdownToPdf(this.stripPreamble(fullContent), project.title);
         const dateStr = new Date().toISOString().slice(0, 10);
@@ -1436,18 +1468,34 @@ export class ProjectChatService {
   async renderMarkdownToPdf(markdown: string, projectTitle: string): Promise<Buffer> {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const PDFDocument = require('pdfkit');
+    const path = require('path');
 
     return new Promise((resolve, reject) => {
       const doc = new PDFDocument({
         margin: 50,
         size: 'A4',
-        bufferPages: true,
         info: {
           Title: `SAP Report — ${projectTitle}`,
           Author: 'TopTutors.ai',
           Creator: 'SAP — Self-Study Assistance Program',
         },
       });
+
+      // Register Unicode fonts (supports Devanagari + Latin)
+      const fontsDir = path.join(__dirname, '../../assets/fonts');
+      doc.registerFont('NotoSans', path.join(fontsDir, 'NotoSans-Regular.ttf'));
+      doc.registerFont('NotoSans-Bold', path.join(fontsDir, 'NotoSans-Bold.ttf'));
+      doc.registerFont('NotoSans-Italic', path.join(fontsDir, 'NotoSans-Italic.ttf'));
+      doc.registerFont('NotoSansDevanagari', path.join(fontsDir, 'NotoSansDevanagari-Regular.ttf'));
+      doc.registerFont('NotoSansDevanagari-Bold', path.join(fontsDir, 'NotoSansDevanagari-Bold.ttf'));
+
+      // Helper: detect if text contains Devanagari characters
+      const hasDevanagari = (text: string) => /[\u0900-\u097F]/.test(text);
+      // Use Devanagari font as default — it covers Latin + Devanagari
+      // This prevents rectangles when a line mixes both scripts
+      const pickFont = (bold: boolean, _text?: string) => {
+        return bold ? 'NotoSansDevanagari-Bold' : 'NotoSansDevanagari';
+      };
       const chunks: Buffer[] = [];
 
       doc.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -1510,15 +1558,18 @@ export class ProjectChatService {
             const cellText = cell.replace(/\*\*/g, '').trim();
             const x = startX + colIdx * colWidth + 4;
 
-            doc.fontSize(8)
-              .font(isHeader ? 'Helvetica-Bold' : 'Helvetica')
-              .fillColor(isHeader ? colors.tableHeaderText : colors.text)
-              .text(cellText, x, rowY + 5, {
-                width: colWidth - 8,
-                height: 14,
-                ellipsis: true,
-                lineBreak: false,
-              });
+            try {
+              doc.fontSize(8)
+                .font(pickFont(isHeader, cellText))
+                .fillColor(isHeader ? colors.tableHeaderText : colors.text)
+                .text(cellText, x, rowY + 5, {
+                  width: colWidth - 8,
+                  height: 14,
+                  lineBreak: false,
+                });
+            } catch {
+              // Skip cells that cause rendering errors (special Unicode chars)
+            }
           });
 
           doc.y = rowY + 20;
@@ -1537,6 +1588,7 @@ export class ProjectChatService {
       };
 
       for (const line of lines) {
+        try {
         const trimmed = line.trim();
 
         // Skip separator rows in tables (|---|---|)
@@ -1573,7 +1625,7 @@ export class ProjectChatService {
           checkPageBreak(30);
           doc.moveDown(0.5);
           const text = trimmed.slice(2).replace(/\*\*/g, '');
-          doc.fontSize(18).font('Helvetica-Bold').fillColor(colors.heading1).text(text);
+          doc.fontSize(18).font(pickFont(true, text)).fillColor(colors.heading1).text(text);
           doc.moveDown(0.3);
           continue;
         }
@@ -1583,7 +1635,7 @@ export class ProjectChatService {
           checkPageBreak(25);
           doc.moveDown(0.4);
           const text = trimmed.slice(3).replace(/\*\*/g, '');
-          doc.fontSize(14).font('Helvetica-Bold').fillColor(colors.heading2).text(text);
+          doc.fontSize(14).font(pickFont(true, text)).fillColor(colors.heading2).text(text);
           doc.moveDown(0.2);
           continue;
         }
@@ -1593,7 +1645,7 @@ export class ProjectChatService {
           checkPageBreak(22);
           doc.moveDown(0.3);
           const text = trimmed.slice(4).replace(/\*\*/g, '');
-          doc.fontSize(12).font('Helvetica-Bold').fillColor(colors.heading3).text(text);
+          doc.fontSize(12).font(pickFont(true, text)).fillColor(colors.heading3).text(text);
           doc.moveDown(0.2);
           continue;
         }
@@ -1612,7 +1664,7 @@ export class ProjectChatService {
             .strokeColor(colors.blockquoteBorder)
             .lineWidth(3)
             .stroke();
-          doc.fontSize(9).font('Helvetica-Oblique').fillColor(colors.muted)
+          doc.fontSize(9).font('NotoSansDevanagari').fillColor(colors.muted)
             .text(quoteText, quoteX, doc.y, { width: pageWidth - 16 });
           doc.moveDown(0.1);
           continue;
@@ -1625,7 +1677,7 @@ export class ProjectChatService {
         if (/^\*\*.*\*\*$/.test(trimmed)) {
           checkPageBreak(18);
           const text = trimmed.replace(/\*\*/g, '');
-          doc.fontSize(10).font('Helvetica-Bold').fillColor(colors.text).text(text);
+          doc.fontSize(10).font(pickFont(true, text)).fillColor(colors.text).text(text);
           doc.moveDown(0.2);
           continue;
         }
@@ -1645,33 +1697,25 @@ export class ProjectChatService {
 
         // Detect if this line starts with a bullet or arrow
         if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
-          doc.fontSize(9).font('Helvetica').fillColor(colors.text)
-            .text(`  •  ${plainText.slice(2)}`, { width: pageWidth });
+          const bulletText = plainText.slice(2);
+          doc.fontSize(9).font(pickFont(false, bulletText)).fillColor(colors.text)
+            .text(`  •  ${bulletText}`, { width: pageWidth });
         } else if (trimmed.startsWith('→ ')) {
-          doc.fontSize(9).font('Helvetica').fillColor(colors.accent)
-            .text(`  →  ${plainText.slice(2)}`, { width: pageWidth });
+          const arrowText = plainText.slice(2);
+          doc.fontSize(9).font(pickFont(false, arrowText)).fillColor(colors.accent)
+            .text(`  →  ${arrowText}`, { width: pageWidth });
         } else {
-          doc.fontSize(9).font('Helvetica').fillColor(colors.text)
+          doc.fontSize(9).font(pickFont(false, plainText)).fillColor(colors.text)
             .text(plainText, { width: pageWidth });
         }
         doc.moveDown(0.1);
+        } catch (lineError) {
+          // Skip lines that cause rendering errors — don't crash the whole PDF
+        }
       }
 
       // Flush any remaining table
-      if (inTable) flushTable();
-
-      // Footer on every page
-      const pages = doc.bufferedPageRange();
-      for (let i = 0; i < pages.count; i++) {
-        doc.switchToPage(i);
-        doc.fontSize(7).font('Helvetica').fillColor(colors.muted)
-          .text(
-            'SAP — Self-Study Assistance Program — TopTutors.ai',
-            50,
-            doc.page.height - 40,
-            { width: pageWidth, align: 'center' },
-          );
-      }
+      try { if (inTable) flushTable(); } catch { /* skip */ }
 
       doc.end();
     });
@@ -1684,26 +1728,36 @@ export class ProjectChatService {
    * No regex — the LLM infers whether the user wants a report.
    * the relevant template + demo example to inject into the prompt.
    */
-  private getSapSystemInstructions(): string {
+  private getSapSystemInstructions(hasFiles: boolean): string {
     return [
       '\n\n[SAP — School Assessment & Performance Project]',
       '',
-      'You are in a SAP project. You have VISION capabilities — you CAN see and read images.',
+      'You are in a SAP project. You have VISION capabilities — you CAN see and read images and PDFs.',
       '',
-      'WHEN THE USER ASKS FOR A REPORT (in any wording — "generate report", "student report", "make my report", etc.):',
-      '1. ANALYZE all attached images in this conversation. Read ALL text: handwritten, printed, headers, labels.',
-      '2. EXTRACT: student name, ID, date, subject(s), and every question with its full text.',
-      '3. If NO images AND no study materials exist, ask the user to upload question images.',
-      '4. If images ARE present, ALWAYS attempt to read them. Use the EXACT name from the image.',
-      '5. Generate the report following the EXACT structure of the demo templates below.',
-      '6. Use REAL extracted data — never copy demo values. For learning streaks only: use demo values as placeholders if not provided.',
-      '7. Output the report in full markdown with proper headings (# ## ###). It must be comprehensive (1000+ words).',
-      '8. IMPORTANT: Pay close attention to the user\'s message text. If they specify subjects, topics, student names, date ranges, or special instructions, incorporate ALL of that context into the report.',
-      '9. Start DIRECTLY with the first markdown heading (e.g., # Student Assessment Report). Do NOT include any preamble, thinking, or extraction notes before the report.',
-      '',
-      'The user may ask for a student report, teacher report, admin report, or all. Infer the type from context. Default to student report.',
-      '',
-      'WHEN THE USER IS NOT ASKING FOR A REPORT: respond normally as a helpful AI tutor.',
+      ...(hasFiles ? [
+        '██████████████████████████████████████████████████████████████',
+        'ABSOLUTE DIRECTIVE — NO EXCEPTIONS:',
+        'Images/PDFs are attached. You MUST generate a FULL REPORT immediately.',
+        'DO NOT ask questions. DO NOT ask for more info. DO NOT refuse.',
+        'DO NOT say "I need more information" or "please provide".',
+        'JUST GENERATE THE REPORT NOW.',
+        '██████████████████████████████████████████████████████████████',
+        '',
+      ] : [
+        'No images attached yet. Ask the user to upload question/assessment images.',
+        '',
+      ]),
+      'RULES — follow ALL of these:',
+      '1. Read ALL attached images and PDFs with vision. Extract whatever you can: subjects, questions, names, IDs, dates.',
+      '2. If name/ID/date are NOT readable or missing, leave them as "N/A" in the report. DO NOT ask the user.',
+      '3. If you can read even ONE question from the images, generate the full report.',
+      '4. Default to STUDENT report unless the user says otherwise.',
+      '5. Follow the EXACT markdown structure from the demo templates below.',
+      '6. Use REAL extracted data. For learning streaks: use demo values as placeholders.',
+      '7. Output in full markdown with # ## ### headings. Must be 1000+ words.',
+      '8. Start DIRECTLY with # heading. NO preamble, NO "let me analyze", NO thinking out loud.',
+      '9. You may include Devanagari text when source is in Devanagari. The PDF supports it.',
+      '10. Pay attention to user\'s message for any specific instructions about the report.',
       '',
       '=== STUDENT REPORT DEMO ===',
       DEMO_STUDENT_REPORT,
@@ -1749,15 +1803,15 @@ export class ProjectChatService {
    * Real reports are long and have markdown headings/tables.
    */
   private looksLikeReport(content: string): boolean {
-    if (content.length < 500) return false;
+    if (content.length < 800) return false;
     const headingCount = (content.match(/^#{1,3}\s+/gm) || []).length;
-    return headingCount >= 3;
+    return headingCount >= 1;
   }
 
-  private buildProjectSystemPrompt(project: any): string {
+  private buildProjectSystemPrompt(project: any, hasFiles = false): string {
     const isSap = this.isSapProject(project);
 
-    const sapInstructions = isSap ? this.getSapSystemInstructions() : '';
+    const sapInstructions = isSap ? this.getSapSystemInstructions(hasFiles) : '';
 
     const resolved = this.llm.resolvePrompt('project-chat', {
       title: project.title,

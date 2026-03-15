@@ -374,7 +374,8 @@ export class GeminiChatService {
 
         // SAP-specific system instructions — always inject when SAP project is attached
         if (isSap) {
-          systemPrompt += this.getSapSystemInstructions();
+          const hasFiles = attachments?.some(f => f.mimetype.startsWith('image/') || f.mimetype === 'application/pdf') || false;
+          systemPrompt += this.getSapSystemInstructions(hasFiles);
         }
 
         // Inject study materials context
@@ -391,6 +392,7 @@ export class GeminiChatService {
 
       // SAP: always flag — the LLM decides whether to generate a report
       const isSapReport = isSap;
+      const sapHasFiles = isSap && (attachments?.some(f => f.mimetype.startsWith('image/') || f.mimetype === 'application/pdf') || false);
 
       const messages: LlmMessage[] = [
         ...history,
@@ -439,7 +441,8 @@ export class GeminiChatService {
 
       // SAP Report: auto-generate PDF and upload to GCS
       let reportDownload: StreamChunk['reportDownload'] | undefined;
-      const isActualReport = isSapReport && responseText && this.looksLikeReport(responseText) && dto.projectId;
+      const isActualReport = isSapReport && responseText && dto.projectId &&
+        (sapHasFiles ? responseText.length > 50 : this.looksLikeReport(responseText));
       if (isActualReport) {
         try {
           const reportMarkdown = this.stripPreamble(responseText);
@@ -524,6 +527,7 @@ export class GeminiChatService {
     dto: SendMessageDto,
     attachments?: Express.Multer.File[],
   ): Promise<StreamingResponse> {
+    this.logger.log(`[SAP-DEBUG] sendMessageStreaming called — projectId=${dto.projectId}, hasAttachments=${!!attachments?.length}, attachmentCount=${attachments?.length || 0}, imageCount=${attachments?.filter(f => f.mimetype.startsWith('image/')).length || 0}`);
     const emitter = new EventEmitter();
 
     // Get or create session
@@ -663,9 +667,9 @@ export class GeminiChatService {
     const heartbeatIntervalMs =
       Number(this.configService.get<string>('GEMINI_STREAM_HEARTBEAT_MS')) || 5000;
     const idleTimeoutMs =
-      Number(this.configService.get<string>('GEMINI_STREAM_IDLE_TIMEOUT_MS')) || 90000;
+      Number(this.configService.get<string>('GEMINI_STREAM_IDLE_TIMEOUT_MS')) || 45000;
     const totalTimeoutMs =
-      Number(this.configService.get<string>('GEMINI_STREAM_TOTAL_TIMEOUT_MS')) || 5 * 60 * 1000;
+      Number(this.configService.get<string>('GEMINI_STREAM_TOTAL_TIMEOUT_MS')) || 6 * 60 * 1000;
 
     let heartbeatTimer: NodeJS.Timeout | null = null;
 
@@ -704,7 +708,8 @@ export class GeminiChatService {
 
         // SAP-specific system instructions — always inject when SAP project is attached
         if (isSap) {
-          systemPrompt += this.getSapSystemInstructions();
+          const hasFiles = attachments?.some(f => f.mimetype.startsWith('image/') || f.mimetype === 'application/pdf') || false;
+          systemPrompt += this.getSapSystemInstructions(hasFiles);
         }
 
         // Inject study materials context
@@ -749,6 +754,7 @@ export class GeminiChatService {
 
       // SAP: always flag SAP projects — the LLM decides whether to generate a report
       const isSapReport = isSap;
+      const sapHasFiles = isSap && (attachments?.some(f => f.mimetype.startsWith('image/') || f.mimetype === 'application/pdf') || false);
 
       // ── Mode detection & thinking trace ──
       const mode: StreamChunk['mode'] = options?.deepThink
@@ -895,16 +901,18 @@ export class GeminiChatService {
 
         const now = Date.now();
         const waitingMs = now - streamData.lastActivityAtMs;
+        const isStalled = waitingMs > 30000; // 30s no content = stalled
+
         emitter.emit('chunk', {
           type: 'heartbeat',
           messageId,
           sessionId,
           fullContent: streamData.content,
           waitingMs,
-          message:
-            waitingMs > 30000
-              ? 'Still working… this is taking longer than usual'
-              : 'Still working…',
+          stalled: isStalled || undefined,
+          message: isStalled
+            ? 'Taking longer than expected… you can retry if needed'
+            : 'Still working…',
         } as StreamChunk);
       }, heartbeatIntervalMs);
 
@@ -922,6 +930,11 @@ export class GeminiChatService {
         const elapsedMs = Date.now() - startedAtMs;
         if (elapsedMs > totalTimeoutMs) {
           throw new Error('Generation timed out (took too long)');
+        }
+
+        // Idle timeout — no new content for 90 seconds
+        if (sd && (Date.now() - sd.lastActivityAtMs > idleTimeoutMs) && fullContent.length > 0) {
+          throw new Error('Stream stalled — no new content received');
         }
 
         // First real chunk: close the thinking trace so no more fake phases appear
@@ -957,9 +970,17 @@ export class GeminiChatService {
         usageMetadata = {};
       }
 
-      // SAP report handling
+      // SAP report handling — detailed logging for debugging
       let reportDownload: StreamChunk['reportDownload'] | undefined;
-      const isActualReport = !wasCancelled && isSapReport && this.looksLikeReport(fullContent) && options?.projectId;
+      if (isSapReport) {
+        this.logger.log(`[SAP-DEBUG] isSapReport=${isSapReport}, sapHasFiles=${sapHasFiles}, wasCancelled=${wasCancelled}, projectId=${options?.projectId}, contentLength=${fullContent.length}`);
+      }
+      // SAP + images = ALWAYS generate PDF. No exceptions. No threshold.
+      const isActualReport = !wasCancelled && isSapReport && options?.projectId &&
+        (sapHasFiles ? fullContent.length > 50 : this.looksLikeReport(fullContent));
+      if (isSapReport) {
+        this.logger.log(`[SAP-DEBUG] isActualReport=${isActualReport}`);
+      }
 
       // SAP: if content was suppressed but it's NOT a report, emit the full content now
       if (isSapReport && !isActualReport && !wasCancelled) {
@@ -972,7 +993,13 @@ export class GeminiChatService {
         } as StreamChunk);
       }
 
-      if (isActualReport) {
+      // Re-check cancel flag before PDF generation (user may have cancelled while LLM was streaming)
+      const cancelledDuringStream = this.activeStreams.get(streamId)?.cancelled;
+      if (cancelledDuringStream) {
+        wasCancelled = true;
+      }
+
+      if (isActualReport && !wasCancelled) {
         emitter.emit('chunk', {
           type: 'status',
           messageId,
@@ -982,26 +1009,37 @@ export class GeminiChatService {
           thinkingTrace: [...thinkingTrace],
         } as StreamChunk);
 
+        // Check cancel again after PDF render
         try {
           const reportMarkdown = this.stripPreamble(fullContent);
           const pdfBuffer = await this.projectChatService.renderMarkdownToPdf(reportMarkdown, 'SAP');
-          const dateStr = new Date().toISOString().slice(0, 10);
-          const filename = `SAP-Report-${dateStr}.pdf`;
 
-          try {
-            const gcsKey = `sap-reports/${options.projectId}/${messageId}/${filename}`;
-            const downloadUrl = await this.storage.uploadBuffer(gcsKey, pdfBuffer, 'application/pdf');
-            reportDownload = { downloadUrl, filename, messageId };
-            this.logger.log(`SAP report PDF uploaded to GCS: ${gcsKey}`);
-          } catch (uploadError: any) {
-            this.logger.warn(`GCS upload failed, serving from backend cache: ${uploadError.message}`);
-            const cacheKey = this.cachePdf(pdfBuffer, filename);
-            const downloadUrl = `/api/v1/gemini-chat/sap-report/${cacheKey}/download`;
-            reportDownload = { downloadUrl, filename, messageId };
+          if (this.activeStreams.get(streamId)?.cancelled) {
+            wasCancelled = true;
+            this.logger.log(`Stream ${streamId} cancelled during PDF generation`);
+          } else {
+            const dateStr = new Date().toISOString().slice(0, 10);
+            const filename = `SAP-Report-${dateStr}.pdf`;
+
+            try {
+              const gcsKey = `sap-reports/${options.projectId}/${messageId}/${filename}`;
+              const downloadUrl = await this.storage.uploadBuffer(gcsKey, pdfBuffer, 'application/pdf');
+              reportDownload = { downloadUrl, filename, messageId };
+              this.logger.log(`SAP report PDF uploaded to GCS: ${gcsKey}`);
+            } catch (uploadError: any) {
+              this.logger.warn(`GCS upload failed, serving from backend cache: ${uploadError.message}`);
+              const cacheKey = this.cachePdf(pdfBuffer, filename);
+              const downloadUrl = `/api/v1/gemini-chat/sap-report/${cacheKey}/download`;
+              reportDownload = { downloadUrl, filename, messageId };
+            }
           }
         } catch (pdfError: any) {
           this.logger.error(`Failed to generate SAP report PDF: ${pdfError.message}`);
         }
+      }
+
+      if (isSapReport) {
+        this.logger.log(`[SAP-DEBUG] reportDownload=${!!reportDownload}, chatContent will be: ${isActualReport ? (reportDownload ? 'DOWNLOAD_BUTTON' : 'PDF_FAILED_FALLBACK') : 'FULL_TEXT'}`);
       }
 
       // Content for chat display
@@ -1092,6 +1130,8 @@ export class GeminiChatService {
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer);
       }
+      // Prevent memory leaks — remove all listeners after streaming
+      emitter.removeAllListeners();
     }
   }
 
@@ -1347,9 +1387,9 @@ export class GeminiChatService {
 
   /** Check if the LLM response actually contains a report (not just a refusal). */
   private looksLikeReport(content: string): boolean {
-    if (content.length < 500) return false;
+    if (content.length < 800) return false;
     const headingCount = (content.match(/^#{1,3}\s+/gm) || []).length;
-    return headingCount >= 3;
+    return headingCount >= 1;
   }
 
   /**
@@ -1358,26 +1398,36 @@ export class GeminiChatService {
    * No regex. The LLM decides from the user's message whether to generate a report.
    * All report templates are included so the LLM has them ready.
    */
-  private getSapSystemInstructions(): string {
+  private getSapSystemInstructions(hasFiles: boolean): string {
     return [
       '\n\n[SAP — School Assessment & Performance Project]',
       '',
-      'You are in a SAP project. You have VISION capabilities — you CAN see and read images.',
+      'You are in a SAP project. You have VISION capabilities — you CAN see and read images and PDFs.',
       '',
-      'WHEN THE USER ASKS FOR A REPORT (in any wording — "generate report", "student report", "make my report", etc.):',
-      '1. ANALYZE all attached images in this conversation. Read ALL text: handwritten, printed, headers, labels.',
-      '2. EXTRACT: student name, ID, date, subject(s), and every question with its full text.',
-      '3. If NO images AND no study materials exist, ask the user to upload question images.',
-      '4. If images ARE present, ALWAYS attempt to read them. Use the EXACT name from the image.',
-      '5. Generate the report following the EXACT structure of the demo templates below.',
-      '6. Use REAL extracted data — never copy demo values. For learning streaks only: use demo values as placeholders if not provided.',
-      '7. Output the report in full markdown with proper headings (# ## ###). It must be comprehensive (1000+ words).',
-      '8. IMPORTANT: Pay close attention to the user\'s message text. If they specify subjects, topics, student names, date ranges, or special instructions, incorporate ALL of that context into the report.',
-      '9. Start DIRECTLY with the first markdown heading (e.g., # Student Assessment Report). Do NOT include any preamble, thinking, or extraction notes before the report.',
-      '',
-      'The user may ask for a student report, teacher report, admin report, or all. Infer the type from context. Default to student report.',
-      '',
-      'WHEN THE USER IS NOT ASKING FOR A REPORT: respond normally as a helpful AI tutor.',
+      ...(hasFiles ? [
+        '██████████████████████████████████████████████████████████████',
+        'ABSOLUTE DIRECTIVE — NO EXCEPTIONS:',
+        'Images/PDFs are attached. You MUST generate a FULL REPORT immediately.',
+        'DO NOT ask questions. DO NOT ask for more info. DO NOT refuse.',
+        'DO NOT say "I need more information" or "please provide".',
+        'JUST GENERATE THE REPORT NOW.',
+        '██████████████████████████████████████████████████████████████',
+        '',
+      ] : [
+        'No images attached yet. Ask the user to upload question/assessment images.',
+        '',
+      ]),
+      'RULES — follow ALL of these:',
+      '1. Read ALL attached images and PDFs with vision. Extract whatever you can: subjects, questions, names, IDs, dates.',
+      '2. If name/ID/date are NOT readable or missing, leave them as "N/A" in the report. DO NOT ask the user.',
+      '3. If you can read even ONE question from the images, generate the full report.',
+      '4. Default to STUDENT report unless the user says otherwise.',
+      '5. Follow the EXACT markdown structure from the demo templates below.',
+      '6. Use REAL extracted data. For learning streaks: use demo values as placeholders.',
+      '7. Output in full markdown with # ## ### headings. Must be 1000+ words.',
+      '8. Start DIRECTLY with # heading. NO preamble, NO "let me analyze", NO thinking out loud.',
+      '9. You may include Devanagari text when source is in Devanagari. The PDF supports it.',
+      '10. Pay attention to user\'s message for any specific instructions about the report.',
       '',
       '=== STUDENT REPORT DEMO ===',
       DEMO_STUDENT_REPORT,

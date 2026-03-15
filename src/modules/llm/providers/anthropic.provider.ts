@@ -20,7 +20,7 @@ export class AnthropicProvider implements ILlmProvider {
   constructor(private readonly config: ConfigService) {
     const apiKey = config.get<string>('ANTHROPIC_API_KEY', '');
     if (apiKey) {
-      this.client = new Anthropic({ apiKey });
+      this.client = new Anthropic({ apiKey, timeout: 300_000 }); // 5 min request timeout
       this.logger.log('Anthropic provider initialized');
     } else {
       this.logger.warn('ANTHROPIC_API_KEY not set — Anthropic provider unavailable');

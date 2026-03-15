@@ -20,7 +20,7 @@ export class OpenAIProvider implements ILlmProvider {
   constructor(private readonly config: ConfigService) {
     const apiKey = config.get<string>('OPENAI_API_KEY', '');
     if (apiKey) {
-      this.client = new OpenAI({ apiKey });
+      this.client = new OpenAI({ apiKey, timeout: 300_000 });
       this.logger.log('OpenAI provider initialized');
     } else {
       this.logger.warn('OPENAI_API_KEY not set — OpenAI provider unavailable');

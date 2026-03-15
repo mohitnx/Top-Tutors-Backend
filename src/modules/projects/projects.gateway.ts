@@ -150,31 +150,34 @@ export class ProjectsGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   // ============ Server-side emission methods ============
 
+  /**
+   * Emit to session room + user room. Frontend filters by sessionId.
+   */
   emitStreamChunk(userId: string, sessionId: string, chunk: ProjectStreamChunk) {
-    this.server.to(`user:${userId}`).emit('streamChunk', chunk);
     this.server.to(`project-session:${sessionId}`).emit('streamChunk', chunk);
+    this.server.to(`user:${userId}`).emit('streamChunk', chunk);
   }
 
   emitCouncilStatus(userId: string, sessionId: string, data: any) {
-    this.server.to(`user:${userId}`).emit('councilStatus', data);
     this.server.to(`project-session:${sessionId}`).emit('councilStatus', data);
+    this.server.to(`user:${userId}`).emit('councilStatus', data);
   }
 
   emitCouncilMemberComplete(userId: string, sessionId: string, data: any) {
-    this.server.to(`user:${userId}`).emit('councilMemberComplete', data);
     this.server.to(`project-session:${sessionId}`).emit('councilMemberComplete', data);
+    this.server.to(`user:${userId}`).emit('councilMemberComplete', data);
   }
 
   emitCouncilSynthesisStart(userId: string, sessionId: string, data: any) {
-    this.server.to(`user:${userId}`).emit('councilSynthesisStart', data);
     this.server.to(`project-session:${sessionId}`).emit('councilSynthesisStart', data);
+    this.server.to(`user:${userId}`).emit('councilSynthesisStart', data);
   }
 
   emitResourceAdded(userId: string, projectId: string, resource: any) {
-    this.server.to(`user:${userId}`).emit('resourceAdded', { projectId, resource });
+    this.server.to(`project:${projectId}`).emit('resourceAdded', { projectId, resource });
   }
 
   emitResourceDeleted(userId: string, projectId: string, resourceId: string) {
-    this.server.to(`user:${userId}`).emit('resourceDeleted', { projectId, resourceId });
+    this.server.to(`project:${projectId}`).emit('resourceDeleted', { projectId, resourceId });
   }
 }

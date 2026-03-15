@@ -129,7 +129,7 @@ export class GeminiChatGateway implements OnGatewayConnection, OnGatewayDisconne
     @ConnectedSocket() socket: AuthenticatedSocket,
     @MessageBody() sessionId: string,
   ) {
-    socket.leave(`session:${sessionId}`);
+    socket.leave(`ai:${sessionId}`);
     return { success: true };
   }
 
@@ -165,26 +165,25 @@ export class GeminiChatGateway implements OnGatewayConnection, OnGatewayDisconne
         },
       );
 
-      // Forward stream chunks to this user
+      // Auto-join this socket to the session room so it receives chunks
+      socket.join(`ai:${result.sessionId}`);
+
+      // Forward stream chunks to session room ONLY (prevents cross-tab spill)
       result.emitter.on('chunk', (chunk: StreamChunk) => {
         if (data.readAloud) chunk.readAloud = true;
-        this.server.to(`user:${socket.user!.id}`).emit('streamChunk', chunk);
         this.server.to(`ai:${result.sessionId}`).emit('streamChunk', chunk);
       });
 
-      // Forward council events
+      // Forward council events to session room ONLY
       result.emitter.on('councilStatus', (data: any) => {
-        this.server.to(`user:${socket.user!.id}`).emit('councilStatus', data);
         this.server.to(`ai:${result.sessionId}`).emit('councilStatus', data);
       });
 
       result.emitter.on('councilMemberComplete', (data: any) => {
-        this.server.to(`user:${socket.user!.id}`).emit('councilMemberComplete', data);
         this.server.to(`ai:${result.sessionId}`).emit('councilMemberComplete', data);
       });
 
       result.emitter.on('councilSynthesisStart', (data: any) => {
-        this.server.to(`user:${socket.user!.id}`).emit('councilSynthesisStart', data);
         this.server.to(`ai:${result.sessionId}`).emit('councilSynthesisStart', data);
       });
 
@@ -211,8 +210,10 @@ export class GeminiChatGateway implements OnGatewayConnection, OnGatewayDisconne
     try {
       const result = await this.geminiChatService.retryMessage(messageId, socket.user.id);
 
+      socket.join(`ai:${result.sessionId}`);
+
       result.emitter.on('chunk', (chunk: StreamChunk) => {
-        this.server.to(`user:${socket.user!.id}`).emit('streamChunk', chunk);
+        this.server.to(`ai:${result.sessionId}`).emit('streamChunk', chunk);
       });
 
       return {
@@ -319,13 +320,12 @@ export class GeminiChatGateway implements OnGatewayConnection, OnGatewayDisconne
   // ============ Server Events (called from service/controller) ============
 
   /**
-   * Emit a stream chunk to a specific user
+   * Emit a stream chunk. Emits to session room + user room.
+   * Frontend MUST filter by chunk.sessionId to avoid cross-session display.
    */
   emitStreamChunk(userId: string, chunk: StreamChunk) {
+    this.server.to(`ai:${chunk.sessionId}`).emit('streamChunk', chunk);
     this.server.to(`user:${userId}`).emit('streamChunk', chunk);
-    
-    // Also emit to session room
-    this.server.to(`session:${chunk.sessionId}`).emit('streamChunk', chunk);
   }
 
   /**

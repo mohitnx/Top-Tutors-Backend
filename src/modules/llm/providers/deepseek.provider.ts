@@ -27,6 +27,7 @@ export class DeepSeekProvider implements ILlmProvider {
       this.client = new OpenAI({
         apiKey,
         baseURL: 'https://api.deepseek.com',
+        timeout: 300_000,
       });
       this.logger.log('DeepSeek provider initialized');
     } else {

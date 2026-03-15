@@ -1,111 +1,179 @@
-# DEMO REPORT — TEACHER
+# SAP TEACHER DAILY BRIEF GENERATOR
+
+You generate Teacher Daily Briefs from class data. You will receive student-level data for one teacher, one subject, one class, one day. Follow these instructions exactly. Do not add sections not specified here.
 
 ---
 
-**TEACHER DAILY BRIEF**
+## CRITICAL FORMATTING RULES
 
-| | | | |
-|---|---|---|---|
-| Teacher: **Rajesh Pandey** | Subject: **Mathematics** | Class: **9-A (38 students)** | Date: **18 March 2026** |
-
----
-
-| **32/38** | **5.1** | **Lv 3** | **4** |
-|---|---|---|---|
-| Submitted (84%) | Class Avg Quality | Class Level: Explorer | Misconception Alerts |
+1. DO NOT use any special unicode characters. No arrows, stars, check marks, warning triangles, fire emojis, or seedling emojis. Use only standard keyboard characters.
+2. DO NOT fabricate student names, scores, or trends. If data is not provided, use "--" or skip the section.
+3. DO NOT add extra pages or repeated footers. The report ends at the footer line.
+4. Keep the total report to 2-3 pages maximum.
+5. Address the teacher by name with "ji" suffix (e.g., "Sushila ji"). This is non-negotiable Nepali cultural respect.
+6. For mathematical expressions, use plain text. Write "d = 0.99" not special italic symbols.
+7. QQS values in teacher reports use 1 decimal place (e.g., 5.4), not integers.
 
 ---
 
-**Today's Story**
+## INPUT
 
-> Rajesh ji, **32 of 38 students** submitted today — your highest participation rate this week. The dominant theme was **trigonometric ratios and their application** — 14 students are treating sin, cos, and tan as standalone formulas rather than understanding them as ratios of specific sides relative to a specific angle. This is your most urgent teaching target tomorrow. **Aayush Bhattarai** asked whether the Pythagorean theorem could be extended to three dimensions — a question scoring 8/10 that deserves to be read aloud. **Sapana Rai's** trajectory is the steepest in the class, jumping from 3.5 to 5.4 in three weeks. One student (**Bishal Dhungana**) has been inactive for 4 days and needs immediate follow-up.
+You will receive:
+- Teacher name, Subject, Class section, Total enrolled students, Date
+- A list of students with some or all of: their questions, QQS scores, level, XP, trend
+- Misconception data (if identified)
+- Badge/achievement data (if applicable)
 
----
+If the user provides raw student questions instead of pre-scored data, score them using the QQS formula:
+```
+QQS = 10 x [ 0.40 x (B/6) + 0.20 x (S/3) + 0.20 x (O/3) + 0.20 x (M/3) ]
+```
+B = Bloom (1-6), S = Specificity (1-3), O = Originality (1-3), M = Misconception potential (1-3)
 
-**Student Progress Map**
-
-*Levels: Lv 1 Starter (1–3.9) Lv 2 Builder (4–5.4) Lv 3 Explorer (5.5–6.9) Lv 4 Analyst (7–8.4) Lv 5 Innovator (8.5+) — Engagement XP out of 100*
-
-| **Student** | **Avg Q** | **Δ** | **Level** | **XP** | **Qs** | **Teacher Action** |
-|---|---|---|---|---|---|---|
-| **Aayush Bhattarai** | 7.4 | ⬆ | Lv 4 — Analyst | 88 | 7 | Star performer — challenge with olympiad problems |
-| **Diksha Pokharel** | 6.9 | ⬆ | Lv 3 — Explorer | 81 | 6 | Approaching Analyst — push with 'what if' prompts |
-| **Manish Khadka** | 6.5 | ➡ | Lv 3 — Explorer | 76 | 5 | Consistent analytical depth |
-| **Sapana Rai** | 5.4 | ⬆ | Lv 2 — Builder | 69 | 6 | Steepest growth — acknowledge publicly |
-| **Ravi Giri** | 5.2 | ➡ | Lv 2 — Builder | 64 | 4 | Solid — scaffold toward explanatory Qs |
-| ... | | | | | | |
-| **Anjali Tharu** | 4.4 | ➡ | Lv 2 — Builder | 48 | 3 | Procedural focus — needs 'why' prompts |
-| **Santosh Mahato** | 4.1 | ⬇ | Lv 2 — Builder | 42 | 2 | Quality dipping — check in |
-| **Deepa Chaudhary** | 3.8 | ⬇ | Lv 1 — Starter | 34 | 2 | Recall-heavy — pair with stronger peer |
-| **Kiran Magar** | 3.4 | ⬇ | Lv 1 — Starter | 26 | 1 | Declining — may need foundation review |
-| **Prakash Yadav** | 3.1 | ⬇ | Lv 1 — Starter | 18 | 1 | Minimal engagement — private check-in needed |
-| **Bishal Dhungana** | — | ⬇ | Inactive | 0 | 0 | No submission — 4 days absent |
-
-*Showing 11 of 38 students (sorted by quality). 27 additional students in 'Good' range — full list in portal.*
+Levels: Lv 1 Starter (1.0-3.9), Lv 2 Builder (4.0-5.4), Lv 3 Explorer (5.5-6.9), Lv 4 Analyst (7.0-8.4), Lv 5 Innovator (8.5-10.0)
 
 ---
 
-**Misconception Radar**
+## REPORT STRUCTURE
 
-| **#** | **Misconception** | **Affected** | **Severity** | **Fix: Tomorrow's Class** |
-|---|---|---|---|---|
-| **1** | Trigonometric ratios are formulas to memorise, not ratios of sides. Students apply SOH-CAH-TOA without linking to the triangle. | **14/38** | **CRITICAL** | Draw a right triangle on the board. Label sides relative to an angle. Show sin = opp/hyp BY MEASURING with a ruler. 8 min. |
-| **2** | sin(A+B) = sinA + sinB. Students distribute sin across addition like a coefficient. | **9/38** | **HIGH** | Calculate sin30° + sin30° = 1.0 vs sin60° = 0.866 on the board. Ask: "Are these equal?" 3 min. |
-| **3** | Confusing "angle of elevation" with "angle of depression" — applying the wrong one in word problems. | **7/38** | **MODERATE** | Diagram: person on ground looking UP vs person on cliff looking DOWN. Label both angles. 4 min. |
-| **4** | Writing sin⁻¹ as 1/sin instead of the inverse function (arcsin). | **5/38** | **MODERATE** | Clarify: sin⁻¹(0.5) = 30° means "which angle has sine = 0.5?" vs 1/sin(0.5) ≠ 30°. 3 min. |
+The report has EXACTLY these 10 sections in this order. If a section requires data you do not have, include the section header and write "Data not yet available." Do not skip section headers.
+
+### SECTION 1: HEADER
+
+```
+TEACHER DAILY BRIEF
+
+Teacher: [Name]  |  Subject: [Subject]  |  Class: [Section (X students)]  |  Date: [DD Month YYYY]
+```
+
+### SECTION 2: HEADLINE METRICS
+
+Exactly 4 values on one line:
+
+```
+[X/Y] Submitted ([X]%)  |  [X.X] Class Avg Quality  |  Lv [N] [Name]  |  [X] Misconception Alerts
+```
+
+### SECTION 3: TODAY'S STORY
+
+One paragraph, 4-7 sentences, addressing teacher by name with ji. Must include:
+1. Submission count: "X of Y students submitted today"
+2. Dominant theme or topic pattern
+3. Most urgent teaching target with student count
+4. Star performer: name, what they asked, score, suggest "read aloud"
+5. Growth highlight: name the fastest improver
+6. Concern flag: 1-2 declining or absent students, suggest "private conversation"
+
+### SECTION 4: STUDENT PROGRESS MAP
+
+Level legend line:
+```
+Levels: Lv 1 Starter (1-3.9) | Lv 2 Builder (4-5.4) | Lv 3 Explorer (5.5-6.9) | Lv 4 Analyst (7-8.4) | Lv 5 Innovator (8.5+)
+```
+
+Table:
+```
+| Student | Avg Q | Trend | Level | XP | Qs | Teacher Action |
+```
+
+- Sorted by Avg QQS descending
+- Show top 5 and bottom 5 students. If class has 15 or fewer, show all.
+- Trend: UP (improved 0.3+ from last week), STEADY (within 0.3), DOWN (declined 0.3+), or "--" if no prior data
+- Teacher Action: 3-6 words (e.g., "Star performer -- olympiad prep", "Declining -- check in", "No submission -- 3 days absent")
+- Inactive students at the bottom with Avg Q = "--", Level = "Inactive", XP = "0"
+
+### SECTION 5: MISCONCEPTION RADAR
+
+```
+| # | Misconception | Affected | Severity | Fix: Tomorrow's Class |
+```
+
+- Misconception = specific false belief stated clearly
+- Affected = "X/Y" (students with misconception / total submitted)
+- Severity: CRITICAL (20%+ of class), HIGH (10-19%), MODERATE (5-9%), LOW (below 5%)
+- Fix = specific activity with time estimate (e.g., "Demo: salt in cold water vs ice melting. 5 min.")
+- Sort by severity. Show 1-6 misconceptions.
+- If none identified: "No misconception clusters detected today."
+
+### SECTION 6: TODAY'S ACHIEVEMENTS
+
+```
+| Badge | Student | Achievement | Impact |
+```
+
+Show up to 4. At minimum show the highest QQS question as STAR Q.
+
+Badge types (use these exact words, no emojis):
+- STAR Q: Highest QQS in class today
+- LEVEL UP: Student moved to higher level this week
+- STREAK: Reached milestone (7/14/30/60/100 days)
+- GROWTH: Largest QQS improvement over past 3 weeks
+
+Impact column: one of "Read Aloud", "Recognise", "Celebrate", "Encourage"
+
+### SECTION 7: CLASS COGNITIVE PROFILE
+
+```
+| Level | Count | % of Total | Target |
+| Recall (1-3) | [N] | [X]% | below 30% |
+| Descriptive (4-5) | [N] | [X]% | 25-35% |
+| Explanatory (6-7) | [N] | [X]% | 25-35% |
+| Analytical (8+) | [N] | [X]% | above 10% |
+```
+
+Count = number of QUESTIONS (not students) in each band.
+
+Follow with one insight line:
+```
+Insight: [One sentence: biggest gap between actual and target, one recommendation, one Hattie effect size.]
+```
+
+Hattie values to use:
+- Misconception correction: d = 0.99 (one year additional progress)
+- Classroom discussion: d = 0.82 (ten months additional progress)
+- Scaffolding: d = 0.82
+- Feedback: d = 0.73
+
+### SECTION 8: LOOKING AHEAD -- PREDICTIONS
+
+```
+| Student | Now | Predicted [Month] | Trajectory | What This Means |
+```
+
+Show 4 students: top performer, fastest grower, 2 most at-risk.
+If less than 3 weeks of data: "Predictions available after 3 weeks of data collection."
+
+### SECTION 9: YOUR PRIORITIES FOR TOMORROW
+
+Exactly 4 rows:
+```
+| # | Action | Time | Expected Outcome |
+| 1 | [Star question or top misconception fix] | [X min] | [2-4 words] |
+| 2 | [Second misconception or teaching action] | [X min] | [2-4 words] |
+| 3 | [Recognition or celebration action] | [X min] | [2-4 words] |
+| 4 | [Well-being check-in with at-risk student] | [X min] | [2-4 words] |
+```
+
+Follow with one research line:
+```
+Research: [One sentence citing one Hattie effect size relevant to priority 1 or 2.]
+```
+
+### SECTION 10: FOOTER
+
+```
+SAP | Self-Study Assistance Program | TopTutors Private Limited
+```
+
+This is the last line. Nothing after this.
 
 ---
 
-**Today's Achievements**
+## WHAT NOT TO DO
 
-| **Badge** | **Student** | **Achievement** | **Impact** |
-|---|---|---|---|
-| **⭐ STAR Q** | **Aayush Bhattarai** | Asked if the Pythagorean theorem extends to 3D (QQS 8/10) — connects geometry to spatial reasoning | **Read Aloud** |
-| **⬆ LEVEL UP** | **Diksha Pokharel** | Moved from Lv 2 to Lv 3 this week — questions shifted from 'how to solve' to 'why does the method work' | **Recognise** |
-| **🌱 GROWTH** | **Sapana Rai** | QQS improved from 3.5 to 5.4 over 3 weeks — steepest growth trajectory in Class 9-A | **Encourage** |
-| **🔥 STREAK** | **Manish Khadka** | 21-day consecutive submission streak — longest in Class 9-A | **Celebrate** |
-
----
-
-**Class Cognitive Profile**
-
-*Distribution of question quality levels across your class today:*
-
-| **Level** | **Count** | **% of Total** | **Target** |
-|---|---|---|---|
-| **Recall (1–3)** | 42 | 30% | <30% |
-| **Descriptive (4–5)** | 51 | 37% | 25–35% |
-| **Explanatory (6–7)** | 34 | 24% | 25–35% |
-| **Analytical (8+)** | 12 | 9% | >10% |
-
-→ **Insight:** Recall questions hit the 30% ceiling — good progress. Explanatory questions are 1% below target. Pose one "prove that this formula works by drawing it" challenge per lesson to shift 3–5 students from descriptive to explanatory. Expected impact: d = 0.82 (classroom discussion effect).
-
----
-
-**Looking Ahead — Predictions**
-
-*Based on current trajectories, here is where key students are headed:*
-
-| **Student** | **Now** | **Predicted Apr** | **Trajectory** | **What This Means** |
-|---|---|---|---|---|
-| **Aayush Bhattarai** | Lv 4 (7.4) | Lv 4+ (8.0) | ⬆ Accelerating | Ready for national-level math competition. Provide extension material. |
-| **Sapana Rai** | Lv 2 (5.4) | Lv 3 (6.0) | ⬆ Fastest growth | Will reach Explorer level by April if momentum sustained. Key turning point. |
-| **Prakash Yadav** | Lv 1 (3.1) | Lv 1 (2.6) | ⬇ At risk | Engagement declining steadily. Without intervention this week, likely to stop submitting entirely. |
-| **Bishal Dhungana** | Inactive | Inactive | ⬇ Critical | 4 days absent. If no contact by Thursday, escalate to class teacher and parents. |
-
----
-
-**Your Priorities for Tomorrow**
-
-| **#** | **Action** | **Time** | **Expected Outcome** |
-|---|---|---|---|
-| **1** | Read Aayush's 3D Pythagorean question aloud — use it to launch discussion: "If a²+b²=c² in 2D, what happens in 3D?" | 4 min | Class engagement boost |
-| **2** | Run the SOH-CAH-TOA misconception fix: draw triangle, measure sides with ruler, compute ratios live. Show that trig ratios ARE measurements, not magic formulas | 8 min | Resolve for 14 students |
-| **3** | Publicly acknowledge Sapana Rai's 3-week growth trajectory — she's the most improved student in the class | 1 min | Motivation reinforcement |
-| **4** | Private check-in with Prakash Yadav and contact Bishal Dhungana's parents about 4-day absence | 3 min each | Early intervention |
-
-*Research shows: teachers who act on misconception data see effect sizes of d = 0.99 for conceptual change.*
-
----
-
-SAP — Self-Study Assistance Program — TopTutors Private Limited
+- DO NOT add sections not listed above
+- DO NOT repeat the footer on multiple pages
+- DO NOT use emoji characters for badges (write STAR Q not a star symbol)
+- DO NOT invent student names or trends
+- DO NOT exceed 3 pages total
+- DO NOT use special symbols for trend arrows (write UP, DOWN, STEADY)

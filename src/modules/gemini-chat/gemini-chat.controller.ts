@@ -141,9 +141,8 @@ export class GeminiChatController {
     this.logger.log('Using streaming response');
     const result = await this.geminiChatService.sendMessageStreaming(user.id, dto);
 
-    // Set up event forwarding to WebSocket
+    // Auto-join user's sockets to session room so they receive chunks
     result.emitter.on('chunk', (chunk) => {
-      this.logger.log(`Emitting chunk: ${chunk.type}`);
       this.geminiChatGateway.emitStreamChunk(user.id, chunk);
     });
 
@@ -250,7 +249,6 @@ export class GeminiChatController {
 
     const result = await this.geminiChatService.sendMessageStreaming(user.id, dto, files);
 
-    // Set up event forwarding to WebSocket
     result.emitter.on('chunk', (chunk) => {
       if (dto.readAloud) chunk.readAloud = true;
       this.geminiChatGateway.emitStreamChunk(user.id, chunk);
@@ -301,9 +299,7 @@ export class GeminiChatController {
 
     const result = await this.geminiChatService.sendAudioMessage(user.id, file, dto.sessionId, dto.readAloud);
 
-    // Set up event forwarding to WebSocket
     result.emitter.on('chunk', (chunk) => {
-      // Propagate readAloud flag to all stream chunks
       if (dto.readAloud) chunk.readAloud = true;
       this.geminiChatGateway.emitStreamChunk(user.id, chunk);
     });
@@ -327,7 +323,7 @@ export class GeminiChatController {
     @Param('messageId') messageId: string,
   ) {
     const result = await this.geminiChatService.retryMessage(messageId, user.id);
-    
+
     result.emitter.on('chunk', (chunk) => {
       this.geminiChatGateway.emitStreamChunk(user.id, chunk);
     });

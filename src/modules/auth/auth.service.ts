@@ -268,9 +268,34 @@ export class AuthService {
         },
       });
 
+      // Auto-create SAP project for new Google users (demo streamlining)
+      await this.prisma.projects.create({
+        data: {
+          userId: newUser.id,
+          title: 'SAP',
+          description: 'School Assessment & Performance — Upload question images to generate professional reports.',
+          aiTemperature: 0.5,
+        },
+      });
+
       user = await this.prisma.user.findUnique({
         where: { id: newUser.id },
         include: { students: true },
+      });
+    }
+
+    // Ensure SAP project exists for all Google users (idempotent)
+    const existingSap = await this.prisma.projects.findFirst({
+      where: { userId: user!.id, title: 'SAP' },
+    });
+    if (!existingSap) {
+      await this.prisma.projects.create({
+        data: {
+          userId: user!.id,
+          title: 'SAP',
+          description: 'School Assessment & Performance — Upload question images to generate professional reports.',
+          aiTemperature: 0.5,
+        },
       });
     }
 
