@@ -263,4 +263,7 @@ export interface ProjectStreamChunk {
     filename: string;
     messageId: string;
   };
+
+  /** When true, the stream was cancelled by the user before completion. */
+  cancelled?: boolean;
 }

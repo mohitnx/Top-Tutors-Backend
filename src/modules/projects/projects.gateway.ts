@@ -12,6 +12,7 @@ import { Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { ProjectStreamChunk } from './dto';
+import { ProjectChatService } from './project-chat.service';
 
 interface AuthenticatedSocket extends Socket {
   user?: {
@@ -39,6 +40,7 @@ export class ProjectsGateway implements OnGatewayConnection, OnGatewayDisconnect
   constructor(
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly projectChatService: ProjectChatService,
   ) {}
 
   async handleConnection(socket: AuthenticatedSocket) {
@@ -125,6 +127,22 @@ export class ProjectsGateway implements OnGatewayConnection, OnGatewayDisconnect
   ) {
     if (!socket.user) return;
     socket.leave(`project-session:${sessionId}`);
+  }
+
+  @SubscribeMessage('cancelStream')
+  handleCancelStream(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data: { streamId: string },
+  ) {
+    if (!socket.user) {
+      return { error: 'Not authenticated' };
+    }
+    const result = this.projectChatService.cancelStream(data.streamId);
+    if (!result) {
+      return { error: 'Stream not found or already completed' };
+    }
+    this.logger.log(`User ${socket.user.email} cancelled project stream ${data.streamId}`);
+    return { success: true, messageId: result.messageId };
   }
 
   // ============ Server-side emission methods ============

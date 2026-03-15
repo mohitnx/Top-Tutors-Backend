@@ -283,6 +283,22 @@ export class GeminiChatGateway implements OnGatewayConnection, OnGatewayDisconne
     }
   }
 
+  @SubscribeMessage('cancelStream')
+  handleCancelStream(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data: { streamId: string },
+  ) {
+    if (!socket.user) {
+      return { error: 'Not authenticated' };
+    }
+    const result = this.geminiChatService.cancelStream(data.streamId);
+    if (!result) {
+      return { error: 'Stream not found or already completed' };
+    }
+    this.logger.log(`User ${socket.user.email} cancelled stream ${data.streamId}`);
+    return { success: true, messageId: result.messageId };
+  }
+
   @SubscribeMessage('typing')
   handleTyping(
     @ConnectedSocket() socket: AuthenticatedSocket,

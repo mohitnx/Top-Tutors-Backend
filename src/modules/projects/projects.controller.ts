@@ -389,8 +389,8 @@ export class ProjectsController {
   @Post(':projectId/chat/messages/with-attachments')
   @HttpCode(HttpStatus.OK)
   @UseInterceptors(
-    FilesInterceptor('files', 5, {
-      limits: { fileSize: 20 * 1024 * 1024 },
+    FilesInterceptor('files', 30, {
+      limits: { fileSize: 50 * 1024 * 1024 },
       fileFilter: (req, file, cb) => {
         const allowedMimes = [
           'image/jpeg',

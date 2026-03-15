@@ -55,6 +55,8 @@ export class ProjectChatService {
       startedAtMs: number;
       lastActivityAtMs: number;
       cancelled?: boolean;
+      messageId: string;
+      sessionId: string;
     }
   > = new Map();
 
@@ -301,6 +303,8 @@ export class ProjectChatService {
       startedAtMs: now,
       lastActivityAtMs: now,
       cancelled: false,
+      messageId: aiMessage.id,
+      sessionId: session.id,
     });
 
     // Start streaming in background
@@ -393,6 +397,8 @@ export class ProjectChatService {
       startedAtMs: now,
       lastActivityAtMs: now,
       cancelled: false,
+      messageId: aiMessage.id,
+      sessionId: session.id,
     });
 
     // Build quiz prompt
@@ -851,13 +857,21 @@ export class ProjectChatService {
       }, heartbeatIntervalMs);
 
       // Iterate stream using provider-agnostic async iterator
+      let wasCancelled = false;
       for await (const chunkText of llmStream) {
+        // Check if user cancelled
+        const sd = this.activeStreams.get(streamId);
+        if (sd?.cancelled) {
+          wasCancelled = true;
+          this.logger.log(`Stream ${streamId} breaking due to cancellation`);
+          break;
+        }
+
         fullContent += chunkText;
 
-        const streamData = this.activeStreams.get(streamId);
-        if (streamData) {
-          streamData.content = fullContent;
-          streamData.lastActivityAtMs = Date.now();
+        if (sd) {
+          sd.content = fullContent;
+          sd.lastActivityAtMs = Date.now();
         }
 
         // SAP: suppress content chunks — PDF will be generated at the end
@@ -873,13 +887,21 @@ export class ProjectChatService {
         }
       }
 
-      // Get usage stats from the completed stream
-      const response = await llmStream.getResponse();
+      // Get usage stats (may fail if cancelled mid-stream)
+      let usageMetadata: any;
+      try {
+        const response = await llmStream.getResponse();
+        usageMetadata = response.usage || {};
+      } catch {
+        usageMetadata = {};
+      }
+
+      // SAP report handling
+      let reportDownload: ProjectStreamChunk['reportDownload'] | undefined;
+      const isActualReport = !wasCancelled && isSapReport && this.looksLikeReport(fullContent);
 
       // SAP: if content was suppressed but it's NOT a report, emit full content now
-      let reportDownload: ProjectStreamChunk['reportDownload'] | undefined;
-      const isActualReport = isSapReport && this.looksLikeReport(fullContent);
-      if (isSapReport && !isActualReport) {
+      if (isSapReport && !isActualReport && !wasCancelled) {
         emitter.emit('chunk', {
           type: 'chunk',
           messageId,
@@ -889,6 +911,7 @@ export class ProjectChatService {
           fullContent,
         } as ProjectStreamChunk);
       }
+
       if (isActualReport) {
         emitter.emit('chunk', {
           type: 'status',
@@ -920,22 +943,24 @@ export class ProjectChatService {
         }
       }
 
-      // For SAP reports: store full content in DB but only show brief message in chat
-      const chatContent = isActualReport
-        ? (reportDownload
-          ? 'Your SAP report has been generated. Download it using the button below.'
-          : 'Your SAP report has been generated but PDF creation failed. Here is the report:\n\n' + fullContent)
-        : fullContent;
+      // Content for chat display
+      const chatContent = wasCancelled
+        ? (fullContent || 'Generation was cancelled.')
+        : isActualReport
+          ? (reportDownload
+            ? 'Your SAP report has been generated. Download it using the button below.'
+            : 'Your SAP report has been generated but PDF creation failed. Here is the report:\n\n' + fullContent)
+          : fullContent;
 
-      // Update message in database (always store full report for reference)
+      // Update message in database
       await this.prisma.project_messages.update({
         where: { id: messageId },
         data: {
-          content: fullContent,
+          content: fullContent || 'Generation was cancelled.',
           isStreaming: false,
-          isComplete: true,
-          promptTokens: response.usage?.promptTokens,
-          completionTokens: response.usage?.completionTokens,
+          isComplete: !wasCancelled,
+          promptTokens: usageMetadata?.promptTokens,
+          completionTokens: usageMetadata?.completionTokens,
         },
       });
 
@@ -952,9 +977,10 @@ export class ProjectChatService {
         sessionId,
         projectId: project.id,
         fullContent: chatContent,
+        cancelled: wasCancelled || undefined,
         usage: {
-          promptTokens: response.usage?.promptTokens || 0,
-          completionTokens: response.usage?.completionTokens || 0,
+          promptTokens: usageMetadata?.promptTokens || 0,
+          completionTokens: usageMetadata?.completionTokens || 0,
         },
         ...(reportDownload && { reportDownload }),
       } as ProjectStreamChunk);
@@ -1029,6 +1055,8 @@ export class ProjectChatService {
       startedAtMs: now,
       lastActivityAtMs: now,
       cancelled: false,
+      messageId: aiMessage.id,
+      sessionId: session.id,
     });
 
     this.executeCouncil(
@@ -1669,6 +1697,8 @@ export class ProjectChatService {
       '5. Generate the report following the EXACT structure of the demo templates below.',
       '6. Use REAL extracted data — never copy demo values. For learning streaks only: use demo values as placeholders if not provided.',
       '7. Output the report in full markdown with proper headings (# ## ###). It must be comprehensive (1000+ words).',
+      '8. IMPORTANT: Pay close attention to the user\'s message text. If they specify subjects, topics, student names, date ranges, or special instructions, incorporate ALL of that context into the report.',
+      '9. Start DIRECTLY with the first markdown heading (e.g., # Student Assessment Report). Do NOT include any preamble, thinking, or extraction notes before the report.',
       '',
       'The user may ask for a student report, teacher report, admin report, or all. Infer the type from context. Default to student report.',
       '',
@@ -1688,6 +1718,17 @@ export class ProjectChatService {
   }
 
   // ============ Helpers ============
+
+  /**
+   * Cancel an active stream. Sets cancelled flag so the streaming loop breaks.
+   */
+  cancelStream(streamId: string): { messageId: string; sessionId: string; partialContent: string } | null {
+    const sd = this.activeStreams.get(streamId);
+    if (!sd || sd.complete || sd.cancelled) return null;
+    sd.cancelled = true;
+    this.logger.log(`Stream ${streamId} cancelled by user`);
+    return { messageId: sd.messageId, sessionId: sd.sessionId, partialContent: sd.content };
+  }
 
   private isSapProject(project: any): boolean {
     return project.title?.trim().toLowerCase() === 'sap';

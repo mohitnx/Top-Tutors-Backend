@@ -284,6 +284,12 @@ export interface StreamChunk {
    * The user can stop playback at any time.
    */
   readAloud?: boolean;
+
+  /**
+   * When true, the stream was cancelled by the user before completion.
+   * Present only on 'end' chunks. fullContent contains partial content.
+   */
+  cancelled?: boolean;
 }
 
 export interface TutorStatusUpdate {

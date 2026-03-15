@@ -908,7 +908,16 @@ export class GeminiChatService {
       }, heartbeatIntervalMs);
 
       // Iterate the provider-agnostic stream with timeout
+      let wasCancelled = false;
       for await (const chunkText of llmStream) {
+        // Check if user cancelled
+        const sd = this.activeStreams.get(streamId);
+        if (sd?.cancelled) {
+          wasCancelled = true;
+          this.logger.log(`Stream ${streamId} breaking due to cancellation`);
+          break;
+        }
+
         const elapsedMs = Date.now() - startedAtMs;
         if (elapsedMs > totalTimeoutMs) {
           throw new Error('Generation timed out (took too long)');
@@ -920,10 +929,9 @@ export class GeminiChatService {
         fullContent += chunkText;
 
         // Update stream tracking
-        const streamData = this.activeStreams.get(streamId);
-        if (streamData) {
-          streamData.content = fullContent;
-          streamData.lastActivityAtMs = Date.now();
+        if (sd) {
+          sd.content = fullContent;
+          sd.lastActivityAtMs = Date.now();
         }
 
         // SAP: suppress content chunks — PDF will be generated at the end
@@ -939,15 +947,21 @@ export class GeminiChatService {
         }
       }
 
-      // Get final response for usage stats
-      const finalResult = await llmStream.getResponse();
-      const usageMetadata = finalResult.usage;
+      // Get final response for usage stats (may fail if cancelled mid-stream)
+      let usageMetadata: any;
+      try {
+        const finalResult = await llmStream.getResponse();
+        usageMetadata = finalResult.usage;
+      } catch {
+        usageMetadata = {};
+      }
+
+      // SAP report handling
+      let reportDownload: StreamChunk['reportDownload'] | undefined;
+      const isActualReport = !wasCancelled && isSapReport && this.looksLikeReport(fullContent) && options?.projectId;
 
       // SAP: if content was suppressed but it's NOT a report, emit the full content now
-      let reportDownload: StreamChunk['reportDownload'] | undefined;
-      const isActualReport = isSapReport && this.looksLikeReport(fullContent) && options?.projectId;
-      if (isSapReport && !isActualReport) {
-        // Not a report — emit the suppressed content as a single chunk
+      if (isSapReport && !isActualReport && !wasCancelled) {
         emitter.emit('chunk', {
           type: 'chunk',
           messageId,
@@ -956,6 +970,7 @@ export class GeminiChatService {
           fullContent,
         } as StreamChunk);
       }
+
       if (isActualReport) {
         emitter.emit('chunk', {
           type: 'status',
@@ -967,13 +982,11 @@ export class GeminiChatService {
         } as StreamChunk);
 
         try {
-          // Strip any LLM preamble (thinking/extraction notes) before the first markdown heading
           const reportMarkdown = this.stripPreamble(fullContent);
           const pdfBuffer = await this.projectChatService.renderMarkdownToPdf(reportMarkdown, 'SAP');
           const dateStr = new Date().toISOString().slice(0, 10);
           const filename = `SAP-Report-${dateStr}.pdf`;
 
-          // Try GCS upload first, fall back to serving from backend cache
           try {
             const gcsKey = `sap-reports/${options.projectId}/${messageId}/${filename}`;
             const downloadUrl = await this.storage.uploadBuffer(gcsKey, pdfBuffer, 'application/pdf');
@@ -990,20 +1003,22 @@ export class GeminiChatService {
         }
       }
 
-      // For SAP reports: store full content in DB but only show brief message in chat
-      const chatContent = isActualReport
-        ? (reportDownload
-          ? 'Your SAP report has been generated. Download it using the button below.'
-          : 'Your SAP report has been generated but PDF creation failed. Here is the report:\n\n' + fullContent)
-        : fullContent;
+      // Content for chat display
+      const chatContent = wasCancelled
+        ? (fullContent || 'Generation was cancelled.')
+        : isActualReport
+          ? (reportDownload
+            ? 'Your SAP report has been generated. Download it using the button below.'
+            : 'Your SAP report has been generated but PDF creation failed. Here is the report:\n\n' + fullContent)
+          : fullContent;
 
-      // Update message in database (always store full report for reference)
+      // Update message in database
       await this.prisma.ai_messages.update({
         where: { id: messageId },
         data: {
-          content: fullContent,
+          content: fullContent || 'Generation was cancelled.',
           isStreaming: false,
-          isComplete: true,
+          isComplete: !wasCancelled,
           promptTokens: usageMetadata?.promptTokens,
           completionTokens: usageMetadata?.completionTokens,
         },
@@ -1018,7 +1033,7 @@ export class GeminiChatService {
       // Update session
       await this.updateSessionAfterMessage(sessionId, content, chatContent);
 
-      // Emit end with full thinking trace for persistent display
+      // Emit end chunk
       emitter.emit('chunk', {
         type: 'end',
         messageId,
@@ -1027,6 +1042,7 @@ export class GeminiChatService {
         provider,
         fullContent: chatContent,
         thinkingTrace: [...thinkingTrace],
+        cancelled: wasCancelled || undefined,
         usage: {
           promptTokens: usageMetadata?.promptTokens || 0,
           completionTokens: usageMetadata?.completionTokens || 0,
@@ -1355,6 +1371,8 @@ export class GeminiChatService {
       '5. Generate the report following the EXACT structure of the demo templates below.',
       '6. Use REAL extracted data — never copy demo values. For learning streaks only: use demo values as placeholders if not provided.',
       '7. Output the report in full markdown with proper headings (# ## ###). It must be comprehensive (1000+ words).',
+      '8. IMPORTANT: Pay close attention to the user\'s message text. If they specify subjects, topics, student names, date ranges, or special instructions, incorporate ALL of that context into the report.',
+      '9. Start DIRECTLY with the first markdown heading (e.g., # Student Assessment Report). Do NOT include any preamble, thinking, or extraction notes before the report.',
       '',
       'The user may ask for a student report, teacher report, admin report, or all. Infer the type from context. Default to student report.',
       '',
@@ -1413,6 +1431,18 @@ export class GeminiChatService {
     }
 
     return null;
+  }
+
+  /**
+   * Cancel an active stream. Sets cancelled flag so the streaming loop breaks.
+   * Returns the partial content accumulated so far, or null if stream not found.
+   */
+  cancelStream(streamId: string): { messageId: string; sessionId: string; partialContent: string } | null {
+    const sd = this.activeStreams.get(streamId);
+    if (!sd || sd.complete || sd.cancelled) return null;
+    sd.cancelled = true;
+    this.logger.log(`Stream ${streamId} cancelled by user`);
+    return { messageId: sd.messageId, sessionId: sd.sessionId, partialContent: sd.content };
   }
 
   /**

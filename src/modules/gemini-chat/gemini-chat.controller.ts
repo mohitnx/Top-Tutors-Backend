@@ -193,8 +193,8 @@ export class GeminiChatController {
 
   @Post('messages/with-attachments')
   @HttpCode(HttpStatus.OK)
-  @UseInterceptors(FilesInterceptor('files', 5, {
-    limits: { fileSize: 20 * 1024 * 1024 }, // 20MB per file
+  @UseInterceptors(FilesInterceptor('files', 30, {
+    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB per file
     fileFilter: (req, file, cb) => {
       const allowedMimes = [
         'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
@@ -240,12 +240,12 @@ export class GeminiChatController {
     const pdfFiles = files.filter(f => f.mimetype === 'application/pdf');
     const imageFiles = files.filter(f => f.mimetype.startsWith('image/'));
 
-    if (pdfFiles.length > 3) {
-      throw new BadRequestException('Maximum 3 PDF files allowed');
+    if (pdfFiles.length > 5) {
+      throw new BadRequestException('Maximum 5 PDF files allowed');
     }
 
-    if (imageFiles.length > 5) {
-      throw new BadRequestException('Maximum 5 image files allowed');
+    if (imageFiles.length > 30) {
+      throw new BadRequestException('Maximum 30 image files allowed');
     }
 
     const result = await this.geminiChatService.sendMessageStreaming(user.id, dto, files);
