@@ -745,6 +745,7 @@ export class ProjectChatService {
         type: 'start',
         messageId,
         sessionId,
+        streamId,
         projectId: project.id,
         message: startMessage,
       } as ProjectStreamChunk);

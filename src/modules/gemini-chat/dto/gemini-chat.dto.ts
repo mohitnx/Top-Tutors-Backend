@@ -227,6 +227,8 @@ export interface StreamChunk {
   type: 'start' | 'chunk' | 'heartbeat' | 'end' | 'error' | 'status';
   messageId: string;
   sessionId: string;
+  /** Unique stream ID — use with cancelStream event to stop generation */
+  streamId?: string;
   content?: string;
   fullContent?: string;
   message?: string; // status/heartbeat text for UI

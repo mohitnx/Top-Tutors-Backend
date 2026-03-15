@@ -291,6 +291,9 @@ export class GeminiChatGateway implements OnGatewayConnection, OnGatewayDisconne
     if (!socket.user) {
       return { error: 'Not authenticated' };
     }
+    if (!data.streamId) {
+      return { error: 'streamId is required' };
+    }
     const result = this.geminiChatService.cancelStream(data.streamId);
     if (!result) {
       return { error: 'Stream not found or already completed' };

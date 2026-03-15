@@ -137,6 +137,9 @@ export class ProjectsGateway implements OnGatewayConnection, OnGatewayDisconnect
     if (!socket.user) {
       return { error: 'Not authenticated' };
     }
+    if (!data.streamId) {
+      return { error: 'streamId is required' };
+    }
     const result = this.projectChatService.cancelStream(data.streamId);
     if (!result) {
       return { error: 'Stream not found or already completed' };

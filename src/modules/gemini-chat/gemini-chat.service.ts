@@ -813,11 +813,12 @@ export class GeminiChatService {
         } as StreamChunk);
       };
 
-      // Emit start
+      // Emit start (include streamId so frontend can cancel)
       emitter.emit('chunk', {
         type: 'start',
         messageId,
         sessionId,
+        streamId,
         mode,
         provider,
         message: options?.deepThink
@@ -2251,6 +2252,7 @@ export class GeminiChatService {
       type: 'start',
       messageId,
       sessionId,
+      streamId,
       mode: 'council',
       provider: 'vertex',
       message: 'Starting AI Council deliberation...',
