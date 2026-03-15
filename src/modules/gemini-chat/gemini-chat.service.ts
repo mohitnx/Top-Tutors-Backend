@@ -14,6 +14,7 @@ import { PromptService } from '../prompts/prompt.service';
 import { ProjectsService } from '../projects/projects.service';
 import { ProjectChatService } from '../projects/project-chat.service';
 import {
+  SAP_PRINCIPLES,
   DEMO_STUDENT_REPORT,
   DEMO_TEACHER_REPORT,
   DEMO_ADMIN_REPORT,
@@ -1428,6 +1429,9 @@ export class GeminiChatService {
       '8. Start DIRECTLY with # heading. NO preamble, NO "let me analyze", NO thinking out loud.',
       '9. You may include Devanagari text when source is in Devanagari. The PDF supports it.',
       '10. Pay attention to user\'s message for any specific instructions about the report.',
+      '',
+      '=== CORE PRINCIPLES (apply to ALL report types) ===',
+      SAP_PRINCIPLES,
       '',
       '=== STUDENT REPORT DEMO ===',
       DEMO_STUDENT_REPORT,

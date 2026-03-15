@@ -29,6 +29,9 @@ function loadTemplate(filename: string): string {
   }
 }
 
+// Core principles — applied to ALL report types
+export const SAP_PRINCIPLES = loadTemplate('PRINCIPLE.md');
+
 // Demo reports — the AI uses these as the exact output format to follow
 export const DEMO_STUDENT_REPORT = loadTemplate('DEMO_Student.md');
 export const DEMO_TEACHER_REPORT = loadTemplate('DEMO_Teacher.md');

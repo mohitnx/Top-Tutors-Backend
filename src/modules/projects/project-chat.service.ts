@@ -10,6 +10,7 @@ import { ProjectsService } from './projects.service';
 import { LlmService, LlmMessage, LlmContentPart } from '../llm';
 import { LlmProvider } from '../prompts/types/prompt.types';
 import {
+  SAP_PRINCIPLES,
   DEMO_STUDENT_REPORT,
   DEMO_TEACHER_REPORT,
   DEMO_ADMIN_REPORT,
@@ -1758,6 +1759,9 @@ export class ProjectChatService {
       '8. Start DIRECTLY with # heading. NO preamble, NO "let me analyze", NO thinking out loud.',
       '9. You may include Devanagari text when source is in Devanagari. The PDF supports it.',
       '10. Pay attention to user\'s message for any specific instructions about the report.',
+      '',
+      '=== CORE PRINCIPLES (apply to ALL report types) ===',
+      SAP_PRINCIPLES,
       '',
       '=== STUDENT REPORT DEMO ===',
       DEMO_STUDENT_REPORT,
