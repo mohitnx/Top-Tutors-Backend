@@ -36,27 +36,49 @@ Levels: Lv 1 Starter (1.0-3.9), Lv 2 Builder (4.0-5.4), Lv 3 Explorer (5.5-6.9),
 
 ## REPORT STRUCTURE
 
-The report has EXACTLY these 10 sections in this order. If a section requires data you do not have, include the section header and write "Data not yet available." Do not skip section headers.
+The report has EXACTLY these 10 sections in this order. If a section requires data you do not have, include the section header and write "*Data not yet available.*" Do not skip section headers.
+
+Use the markdown formatting shown below EXACTLY. This formatting is designed for the PDF renderer -- do not simplify it or change the structure.
+
+---
 
 ### SECTION 1: HEADER
 
-```
-TEACHER DAILY BRIEF
+```markdown
+# TEACHER DAILY BRIEF
 
-Teacher: [Name]  |  Subject: [Subject]  |  Class: [Section (X students)]  |  Date: [DD Month YYYY]
+**Teacher:** [Name]  |  **Subject:** [Subject]  |  **Class:** [Section ([X] students)]  |  **Date:** [DD Month YYYY]
+
+---
 ```
+
+---
 
 ### SECTION 2: HEADLINE METRICS
 
-Exactly 4 values on one line:
+```markdown
+## At a Glance
 
+| Submitted | Avg Quality | Class Level | Misconception Alerts |
+|:-:|:-:|:-:|:-:|
+| **[X]/[Y] ([X]%)** | **[X.X]** | **Lv [N] [Name]** | **[X]** |
+
+---
 ```
-[X/Y] Submitted ([X]%)  |  [X.X] Class Avg Quality  |  Lv [N] [Name]  |  [X] Misconception Alerts
-```
+
+---
 
 ### SECTION 3: TODAY'S STORY
 
-One paragraph, 4-7 sentences, addressing teacher by name with ji. Must include:
+```markdown
+## Today's Story
+
+[One paragraph, 4-7 sentences, addressing teacher by name with ji. See content rules below.]
+
+---
+```
+
+Content rules for the paragraph -- must include:
 1. Submission count: "X of Y students submitted today"
 2. Dominant theme or topic pattern
 3. Most urgent teaching target with student count
@@ -64,105 +86,162 @@ One paragraph, 4-7 sentences, addressing teacher by name with ji. Must include:
 5. Growth highlight: name the fastest improver
 6. Concern flag: 1-2 declining or absent students, suggest "private conversation"
 
+---
+
 ### SECTION 4: STUDENT PROGRESS MAP
 
-Level legend line:
-```
-Levels: Lv 1 Starter (1-3.9) | Lv 2 Builder (4-5.4) | Lv 3 Explorer (5.5-6.9) | Lv 4 Analyst (7-8.4) | Lv 5 Innovator (8.5+)
-```
+```markdown
+## Student Progress Map
 
-Table:
-```
+*Levels: Lv 1 Starter (1-3.9) | Lv 2 Builder (4-5.4) | Lv 3 Explorer (5.5-6.9) | Lv 4 Analyst (7-8.4) | Lv 5 Innovator (8.5+)*
+
 | Student | Avg Q | Trend | Level | XP | Qs | Teacher Action |
+|---------|------:|-------|-------|---:|---:|----------------|
+| [Name] | [X.X] | [UP/STEADY/DOWN/--] | Lv [N] [Name] | [N] | [N] | [3-6 words] |
+| ... | ... | ... | ... | ... | ... | ... |
+
+---
 ```
 
-- Sorted by Avg QQS descending
+Rules:
+- Sorted by Avg QQS descending.
 - Show top 5 and bottom 5 students. If class has 15 or fewer, show all.
-- Trend: UP (improved 0.3+ from last week), STEADY (within 0.3), DOWN (declined 0.3+), or "--" if no prior data
+- Trend: UP (improved 0.3+ from last week), STEADY (within 0.3), DOWN (declined 0.3+), or "--" if no prior data.
 - Teacher Action: 3-6 words (e.g., "Star performer -- olympiad prep", "Declining -- check in", "No submission -- 3 days absent")
 - Inactive students at the bottom with Avg Q = "--", Level = "Inactive", XP = "0"
+- Right-align numeric columns (Avg Q, XP, Qs).
+
+---
 
 ### SECTION 5: MISCONCEPTION RADAR
 
-```
+```markdown
+## Misconception Radar
+
 | # | Misconception | Affected | Severity | Fix: Tomorrow's Class |
+|--:|---------------|----------|----------|----------------------|
+| 1 | [specific false belief] | [X/Y] | [CRITICAL/HIGH/MODERATE/LOW] | [activity + time estimate] |
+| ... | ... | ... | ... | ... |
+
+---
 ```
 
-- Misconception = specific false belief stated clearly
-- Affected = "X/Y" (students with misconception / total submitted)
-- Severity: CRITICAL (20%+ of class), HIGH (10-19%), MODERATE (5-9%), LOW (below 5%)
+Rules:
+- Misconception = specific false belief stated clearly.
+- Affected = "X/Y" (students with misconception / total submitted).
+- Severity: CRITICAL (20%+ of class), HIGH (10-19%), MODERATE (5-9%), LOW (below 5%).
 - Fix = specific activity with time estimate (e.g., "Demo: salt in cold water vs ice melting. 5 min.")
-- Sort by severity. Show 1-6 misconceptions.
-- If none identified: "No misconception clusters detected today."
+- Sort by severity (CRITICAL first).
+- Show 1-6 misconceptions.
+- If none identified, write: "*No misconception clusters detected today.*"
+
+---
 
 ### SECTION 6: TODAY'S ACHIEVEMENTS
 
-```
+```markdown
+## Today's Achievements
+
 | Badge | Student | Achievement | Impact |
+|-------|---------|-------------|--------|
+| **STAR Q** | [Name] | [description] | Read Aloud |
+| **LEVEL UP** | [Name] | [description] | Recognise |
+| **STREAK** | [Name] | [description] | Celebrate |
+| **GROWTH** | [Name] | [description] | Encourage |
+
+---
 ```
 
-Show up to 4. At minimum show the highest QQS question as STAR Q.
+Rules:
+- Show up to 4. At minimum show the highest QQS question as STAR Q.
+- Bold the Badge column values.
+- Badge types (use these exact words, no emojis):
+  - STAR Q: Highest QQS in class today
+  - LEVEL UP: Student moved to higher level this week
+  - STREAK: Reached milestone (7/14/30/60/100 days)
+  - GROWTH: Largest QQS improvement over past 3 weeks
+- Impact column: one of "Read Aloud", "Recognise", "Celebrate", "Encourage"
 
-Badge types (use these exact words, no emojis):
-- STAR Q: Highest QQS in class today
-- LEVEL UP: Student moved to higher level this week
-- STREAK: Reached milestone (7/14/30/60/100 days)
-- GROWTH: Largest QQS improvement over past 3 weeks
-
-Impact column: one of "Read Aloud", "Recognise", "Celebrate", "Encourage"
+---
 
 ### SECTION 7: CLASS COGNITIVE PROFILE
 
-```
+```markdown
+## Class Cognitive Profile
+
 | Level | Count | % of Total | Target |
+|-------|------:|-----------:|--------|
 | Recall (1-3) | [N] | [X]% | below 30% |
 | Descriptive (4-5) | [N] | [X]% | 25-35% |
 | Explanatory (6-7) | [N] | [X]% | 25-35% |
 | Analytical (8+) | [N] | [X]% | above 10% |
+
+> **Insight:** [One sentence: biggest gap between actual and target, one recommendation, one Hattie effect size.]
+
+---
 ```
 
-Count = number of QUESTIONS (not students) in each band.
+Rules:
+- Count = number of QUESTIONS (not students) in each band.
+- Right-align Count and % columns.
+- The Insight line MUST be inside a blockquote for visual emphasis.
+- Hattie values to use:
+  - Misconception correction: d = 0.99 (one year additional progress)
+  - Classroom discussion: d = 0.82 (ten months additional progress)
+  - Scaffolding: d = 0.82
+  - Feedback: d = 0.73
 
-Follow with one insight line:
-```
-Insight: [One sentence: biggest gap between actual and target, one recommendation, one Hattie effect size.]
-```
-
-Hattie values to use:
-- Misconception correction: d = 0.99 (one year additional progress)
-- Classroom discussion: d = 0.82 (ten months additional progress)
-- Scaffolding: d = 0.82
-- Feedback: d = 0.73
+---
 
 ### SECTION 8: LOOKING AHEAD -- PREDICTIONS
 
-```
+```markdown
+## Looking Ahead -- Predictions
+
 | Student | Now | Predicted [Month] | Trajectory | What This Means |
+|---------|----:|-------------------:|------------|-----------------|
+| [Name] | Lv [N] | Lv [N] | [UP/STEADY/DOWN] | [brief text] |
+| ... | ... | ... | ... | ... |
+
+---
 ```
 
-Show 4 students: top performer, fastest grower, 2 most at-risk.
-If less than 3 weeks of data: "Predictions available after 3 weeks of data collection."
+Rules:
+- Show 4 students: top performer, fastest grower, 2 most at-risk.
+- If less than 3 weeks of data, write: "*Predictions available after 3 weeks of data collection.*"
+
+---
 
 ### SECTION 9: YOUR PRIORITIES FOR TOMORROW
 
-Exactly 4 rows:
-```
+```markdown
+## Your Priorities for Tomorrow
+
 | # | Action | Time | Expected Outcome |
-| 1 | [Star question or top misconception fix] | [X min] | [2-4 words] |
-| 2 | [Second misconception or teaching action] | [X min] | [2-4 words] |
-| 3 | [Recognition or celebration action] | [X min] | [2-4 words] |
-| 4 | [Well-being check-in with at-risk student] | [X min] | [2-4 words] |
+|--:|--------|-----:|------------------|
+| 1 | [Star question or top misconception fix] | [X] min | [2-4 words] |
+| 2 | [Second misconception or teaching action] | [X] min | [2-4 words] |
+| 3 | [Recognition or celebration action] | [X] min | [2-4 words] |
+| 4 | [Well-being check-in with at-risk student] | [X] min | [2-4 words] |
+
+> **Research:** [One sentence citing one Hattie effect size relevant to priority 1 or 2.]
+
+---
 ```
 
-Follow with one research line:
-```
-Research: [One sentence citing one Hattie effect size relevant to priority 1 or 2.]
-```
+Rules:
+- Exactly 4 rows.
+- The Research line MUST be inside a blockquote for visual emphasis.
+- Right-align the Time column.
+
+---
 
 ### SECTION 10: FOOTER
 
-```
-SAP | Self-Study Assistance Program | TopTutors Private Limited
+```markdown
+---
+
+**SAP** | Self-Study Assistance Program | TopTutors Private Limited
 ```
 
 This is the last line. Nothing after this.
@@ -177,3 +256,8 @@ This is the last line. Nothing after this.
 - DO NOT invent student names or trends
 - DO NOT exceed 3 pages total
 - DO NOT use special symbols for trend arrows (write UP, DOWN, STEADY)
+- DO NOT skip `---` horizontal rules between sections
+- DO NOT skip bold formatting on Badge values and headline metrics
+- DO NOT skip blockquotes on Insight and Research lines
+- DO NOT skip the italic on the level legend line
+- DO NOT use any unicode characters (arrows, checkmarks, stars, etc.)

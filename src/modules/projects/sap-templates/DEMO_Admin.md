@@ -42,30 +42,46 @@ Trends: UP = improved 0.3+ QQS from last week. STEADY = within 0.3. DOWN = decli
 
 ## REPORT STRUCTURE
 
-Exactly 10 sections in this order.
+Exactly 10 sections in this order. Use the markdown formatting shown below EXACTLY. This formatting is designed for the PDF renderer -- do not simplify it or change the structure.
+
+---
 
 ### SECTION 1: HEADER
 
-```
-PRINCIPAL'S DAILY DASHBOARD
+```markdown
+# PRINCIPAL'S DAILY DASHBOARD
 
-Principal: [Name]  |  Total Students: [N]  |  Faculty: [N]  |  Date: [DD Month YYYY]
+**Principal:** [Name]  |  **Total Students:** [N]  |  **Faculty:** [N]  |  **Date:** [DD Month YYYY]
+
+---
 ```
+
+---
 
 ### SECTION 2: HEADLINE METRICS
 
-Exactly 5 values:
+```markdown
+## At a Glance
+
+| Total Questions | Participation | Avg Quality | School Level | At-Risk |
+|:-:|:-:|:-:|:-:|:-:|
+| **[N]** | **[X]%** | **[X.X]** | **Lv [N] [Name]** | **[N] students** |
+
+---
 ```
-[N] Total Questions  |  [X]% Student Participation  |  [X.X] School Avg Quality  |  Lv [X.X] School Level  |  [N] At-Risk Students
-```
+
+---
 
 ### SECTION 3: SCHOOL PULSE
 
-```
-SCHOOL PULSE -- [Score] / 100
+```markdown
+## School Pulse -- [Score] / 100
 
-Today's Headline:
-[One paragraph, 4-6 sentences]
+**Status: [Label]**
+
+[One paragraph, 4-6 sentences. See content rules below.]
+
+---
 ```
 
 Paragraph must include:
@@ -75,42 +91,74 @@ Paragraph must include:
 4. At-risk summary: count and grade range (NO names)
 5. Quality leader: which grade/cohort leads and their specific QQS
 
+---
+
 ### SECTION 4: GRADE-WISE COMMAND CENTER
 
-```
+```markdown
+## Grade-Wise Command Center
+
 | Grade | Total | Active | Rate | Qs | Avg QQS | Trend | Level | Key Signal |
+|-------|------:|-------:|-----:|---:|--------:|-------|-------|------------|
+| Gr [X] | [N] | [N] | [X]% | [N] | [X.X] | [UP/STEADY/DOWN/--] | Lv [N] | [8 words max] |
+| ... | ... | ... | ... | ... | ... | ... | ... | ... |
+| **TOTAL** | **[N]** | **[N]** | **[X]%** | **[N]** | **[X.X]** | **[TREND]** | **Lv [N]** | **[signal]** |
+
+---
 ```
 
-- One row per grade band. Last row = TOTAL with school-wide aggregates.
+Rules:
+- One row per grade band. Last row = TOTAL with school-wide aggregates and must be bold.
 - Sorted by grade ascending (youngest first).
 - Key Signal = 8 words or fewer.
 - Trend: UP, STEADY, DOWN, or "--"
 
+---
+
 ### SECTION 5: DEPARTMENT PERFORMANCE BOARD
 
-Title line (mandatory):
-```
-Department Performance Board
-Ranked by learning impact. For resource allocation decisions only.
-```
+```markdown
+## Department Performance Board
 
-```
+*Ranked by learning impact. For resource allocation decisions only.*
+
 | # | Department | Qs | QQS | Misc | Trend | Health | Insight |
+|--:|------------|---:|----:|-----:|-------|--------|---------|
+| 1 | [Dept] | [N] | [X.X] | [N] | [UP +X% / STEADY / DOWN -X%] | [Label] | [8 words max] |
+| ... | ... | ... | ... | ... | ... | ... | ... |
+
+---
 ```
 
+Rules:
 - Ranked by (QQS x Participation) descending.
 - Trend: "UP +X%", "STEADY", "DOWN -X%"
 - Health: Thriving / Healthy / Watch / Monitor / Concern
 - Insight: 8 words or fewer.
 - Show ALL departments.
 
+---
+
 ### SECTION 6: PRIORITY ALERTS
 
-```
+```markdown
+## Priority Alerts
+
 | Level | Alert | Action Required |
+|-------|-------|-----------------|
+| **URGENT** | [alert text] | [specific action + who does it] |
+| **HIGH** | [alert text] | [action] |
+| **MEDIUM** | [alert text] | [action] |
+| **WATCH** | [alert text] | [action] |
+| **POSITIVE** | [alert text] | [action] |
+| **MILESTONE** | [alert text] | [action] |
+
+---
 ```
 
-Sorted: URGENT, HIGH, MEDIUM, WATCH, POSITIVE, MILESTONE.
+Rules:
+- Sorted: URGENT first, then HIGH, MEDIUM, WATCH, POSITIVE, MILESTONE.
+- Bold the Level column value.
 - NEVER name students. Use grade + count.
 - Action Required = specific action + who does it.
 - Include at least 1 POSITIVE or MILESTONE when data supports it.
@@ -124,50 +172,71 @@ Alert criteria:
 - POSITIVE: notable improvements
 - MILESTONE: school-wide threshold crossed
 
+---
+
 ### SECTION 7: SCHOOL HEALTH SCORECARD
 
-```
-School Health Scorecard
-```
+```markdown
+## School Health Scorecard
 
-Exactly these 8 metrics in this order:
-```
 | Metric | Today | Last Week | Change | Status | Term Target |
-| Daily Participation | [X]% | [X]% | +/-X% | UP/STEADY/DOWN | 75%+ |
-| Avg Question Quality | [X.X] | [X.X] | +/-X.X | UP/STEADY/DOWN | 5.0+ |
-| At-Risk Students | [N] | [N] | +/-N | UP/STEADY/DOWN | below 15 |
-| Misconception Clusters | [N] | [N] | +/-N | UP/STEADY/DOWN | below 20 |
-| Productive Struggle % | [X]% | [X]% | +/-X% | UP/STEADY/DOWN | 60%+ |
-| Question Depth (Bloom 4+) | [X]% | [X]% | +/-X% | UP/STEADY/DOWN | 30%+ |
-| Teacher Brief Usage | [X/Y] | [X/Y] | +/-N | UP/STEADY/DOWN | Y/Y |
-| Gender Parity Index | [X.XX] | [X.XX] | +/-X.XX | UP/STEADY/DOWN | 0.95+ |
+|--------|------:|----------:|-------:|--------|-------------|
+| Daily Participation | [X]% | [X]% | [+/-X%] | [UP/STEADY/DOWN] | 75%+ |
+| Avg Question Quality | [X.X] | [X.X] | [+/-X.X] | [UP/STEADY/DOWN] | 5.0+ |
+| At-Risk Students | [N] | [N] | [+/-N] | [UP/STEADY/DOWN] | below 15 |
+| Misconception Clusters | [N] | [N] | [+/-N] | [UP/STEADY/DOWN] | below 20 |
+| Productive Struggle % | [X]% | [X]% | [+/-X%] | [UP/STEADY/DOWN] | 60%+ |
+| Question Depth (Bloom 4+) | [X]% | [X]% | [+/-X%] | [UP/STEADY/DOWN] | 30%+ |
+| Teacher Brief Usage | [X/Y] | [X/Y] | [+/-N] | [UP/STEADY/DOWN] | Y/Y |
+| Gender Parity Index | [X.XX] | [X.XX] | [+/-X.XX] | [UP/STEADY/DOWN] | 0.95+ |
+
+---
 ```
 
-Status UP means improving (for At-Risk, a decrease is UP because fewer is better).
+Rules:
+- Exactly these 8 metrics in this exact order.
+- Status UP means improving. For At-Risk and Misconception Clusters, a decrease is UP because fewer is better.
+- Right-align numeric columns.
+
+---
 
 ### SECTION 8: WEEK AHEAD -- PREDICTIONS
 
-```
+```markdown
+## Week Ahead -- Predictions
+
 | Signal | Prediction | Confidence | Preemptive Action |
+|--------|------------|------------|-------------------|
+| [UP/DOWN/STEADY/WARNING] | [prediction text] | [High/Medium/Low] | [action] |
+| ... | ... | ... | ... |
+
+---
 ```
 
-- 4-6 predictions. Signal: UP, DOWN, STEADY, or WARNING.
+Rules:
+- 4-6 predictions.
 - Confidence: High (80%+), Medium (60-79%), Low (below 60%)
 - Include 1+ positive and 1+ concern.
 - If below 3 weeks of data: all Low confidence with note.
 
+---
+
 ### SECTION 9: CLOSING
 
-```
-Every question asked is a student choosing to learn. Today, [N] students made that choice.
+```markdown
+---
+
+*Every question asked is a student choosing to learn. Today, [N] students made that choice.*
 ```
 
 Replace [N] with active student count.
 
+---
+
 ### SECTION 10: FOOTER
 
-```
-SAP | Self-Study Assistance Program | TopTutors Private Limited
+```markdown
+**SAP** | Self-Study Assistance Program | TopTutors Private Limited
 ```
 
 This is the last line. Nothing after this.
@@ -183,3 +252,8 @@ This is the last line. Nothing after this.
 - DO NOT exceed 3 pages
 - DO NOT use emotional language ("we're thrilled", "exciting progress")
 - DO NOT fabricate department or grade data
+- DO NOT skip `---` horizontal rules between sections
+- DO NOT skip bold formatting on the TOTAL row in tables
+- DO NOT skip bold formatting on alert Level values
+- DO NOT skip the italic on the closing quote
+- DO NOT use any unicode characters (arrows, checkmarks, stars, etc.)
