@@ -6,7 +6,8 @@
     "deleteOutDir": true,
     "assets": [
       { "include": "**/*.hbs", "watchAssets": true },
-      { "include": "modules/projects/sap-templates/*.md", "watchAssets": true }
+      { "include": "modules/projects/sap-templates/*.md", "watchAssets": true },
+      { "include": "assets/fonts/*.ttf", "watchAssets": false }
     ],
     "plugins": [
       {
